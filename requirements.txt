@@ -1,8 +1,5 @@
 pyTelegramBotAPI
 opencv-python
-pyautogui
-pynput
-psutil
 pillow
 mss
 requests
