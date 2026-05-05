@@ -1,7 +1,3 @@
 pyTelegramBotAPI
-opencv-python
-pillow
-mss
 requests
-numpy
 pywin32
